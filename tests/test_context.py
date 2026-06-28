@@ -7,10 +7,14 @@ from pathlib import Path
 
 import pytest
 
+import command_ai.context as context
 from command_ai.config import Config
 from command_ai.context import (
     DirListing,
+    _is_wsl,
+    _linux_distro,
     build_tree,
+    detected_shell,
     environment_summary,
     extension_summary,
     gather_context,
@@ -42,9 +46,144 @@ class TestEnvironmentSummary:
         assert str(tmp_path) in result
 
     def test_uses_shell_env(self, monkeypatch):
+        monkeypatch.delenv("AI_CURRENT_SHELL", raising=False)
         monkeypatch.setenv("SHELL", "/bin/fish")
         result = environment_summary()
         assert "/bin/fish" in result
+
+    def test_macos_label(self, monkeypatch):
+        monkeypatch.setattr(context.platform, "system", lambda: "Darwin")
+        monkeypatch.setattr(context.platform, "mac_ver", lambda: ("14.0", "", ""))
+        result = environment_summary()
+        assert "macOS" in result
+        assert "14.0" in result
+
+    def test_linux_label_distro(self, monkeypatch):
+        monkeypatch.setattr(context.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(context, "_linux_distro", lambda: "Ubuntu 22.04")
+        monkeypatch.setattr(context, "_is_wsl", lambda: False)
+        result = environment_summary()
+        assert "Ubuntu 22.04" in result
+        assert "WSL" not in result
+
+    def test_linux_label_wsl(self, monkeypatch):
+        monkeypatch.setattr(context.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(context, "_linux_distro", lambda: "Ubuntu 22.04")
+        monkeypatch.setattr(context, "_is_wsl", lambda: True)
+        result = environment_summary()
+        assert "Ubuntu 22.04" in result
+        assert "WSL" in result
+
+    def test_windows_label(self, monkeypatch):
+        monkeypatch.setattr(context.platform, "system", lambda: "Windows")
+        monkeypatch.setattr(context.platform, "release", lambda: "10")
+        result = environment_summary()
+        assert "Windows (10)" in result
+
+    def test_other_os_label(self, monkeypatch):
+        monkeypatch.setattr(context.platform, "system", lambda: "FreeBSD")
+        monkeypatch.setattr(context.platform, "release", lambda: "14.0-RELEASE")
+        result = environment_summary()
+        assert "FreeBSD" in result
+
+
+# ---------------------------------------------------------------------------
+# detected_shell
+# ---------------------------------------------------------------------------
+
+class TestDetectedShell:
+    def test_ai_current_shell_wins(self, monkeypatch):
+        monkeypatch.setenv("AI_CURRENT_SHELL", "/opt/fish")
+        monkeypatch.setenv("SHELL", "/bin/bash")
+        assert detected_shell() == "/opt/fish"
+
+    def test_shell_used_when_no_hint(self, monkeypatch):
+        monkeypatch.delenv("AI_CURRENT_SHELL", raising=False)
+        monkeypatch.setenv("SHELL", "/bin/dash")
+        assert detected_shell() == "/bin/dash"
+
+    def test_posix_default_sh(self, monkeypatch):
+        monkeypatch.delenv("AI_CURRENT_SHELL", raising=False)
+        monkeypatch.delenv("SHELL", raising=False)
+        monkeypatch.setattr(context.os, "name", "posix")
+        assert detected_shell() == "/bin/sh"
+
+    def test_windows_default_comspec(self, monkeypatch):
+        monkeypatch.delenv("AI_CURRENT_SHELL", raising=False)
+        monkeypatch.delenv("SHELL", raising=False)
+        monkeypatch.setattr(context.os, "name", "nt")
+        monkeypatch.setenv("COMSPEC", r"C:\Windows\System32\cmd.exe")
+        assert detected_shell() == r"C:\Windows\System32\cmd.exe"
+
+    def test_windows_default_cmd_when_no_comspec(self, monkeypatch):
+        monkeypatch.delenv("AI_CURRENT_SHELL", raising=False)
+        monkeypatch.delenv("SHELL", raising=False)
+        monkeypatch.delenv("COMSPEC", raising=False)
+        monkeypatch.setattr(context.os, "name", "nt")
+        assert detected_shell() == "cmd.exe"
+
+
+# ---------------------------------------------------------------------------
+# _is_wsl
+# ---------------------------------------------------------------------------
+
+class TestIsWsl:
+    def test_true_from_release_string(self, monkeypatch):
+        monkeypatch.setattr(
+            context.platform, "release", lambda: "5.15.0-microsoft-standard"
+        )
+        assert _is_wsl() is True
+
+    def test_false_when_release_clean_and_no_proc_version(self, monkeypatch):
+        monkeypatch.setattr(context.platform, "release", lambda: "6.1.0-generic")
+
+        def fake_open(*args, **kwargs):
+            raise OSError("no /proc/version")
+
+        monkeypatch.setattr("builtins.open", fake_open)
+        assert _is_wsl() is False
+
+    def test_true_from_proc_version(self, monkeypatch):
+        import io
+
+        monkeypatch.setattr(context.platform, "release", lambda: "6.1.0-generic")
+
+        def fake_open(*args, **kwargs):
+            return io.StringIO("Linux version 6.1.0 ... Microsoft ... WSL2")
+
+        monkeypatch.setattr("builtins.open", fake_open)
+        assert _is_wsl() is True
+
+
+# ---------------------------------------------------------------------------
+# _linux_distro
+# ---------------------------------------------------------------------------
+
+class TestLinuxDistro:
+    def test_parses_pretty_name(self, monkeypatch):
+        import io
+
+        def fake_open(*args, **kwargs):
+            return io.StringIO('NAME="Ubuntu"\nPRETTY_NAME="Ubuntu 22.04"\n')
+
+        monkeypatch.setattr("builtins.open", fake_open)
+        assert _linux_distro() == "Ubuntu 22.04"
+
+    def test_oserror_returns_linux(self, monkeypatch):
+        def fake_open(*args, **kwargs):
+            raise OSError("no /etc/os-release")
+
+        monkeypatch.setattr("builtins.open", fake_open)
+        assert _linux_distro() == "Linux"
+
+    def test_no_pretty_name_returns_linux(self, monkeypatch):
+        import io
+
+        def fake_open(*args, **kwargs):
+            return io.StringIO('NAME="Arch"\nID=arch\n')
+
+        monkeypatch.setattr("builtins.open", fake_open)
+        assert _linux_distro() == "Linux"
 
 
 # ---------------------------------------------------------------------------
