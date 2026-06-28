@@ -13,18 +13,20 @@ Two modes:
 from __future__ import annotations
 
 import os
+import platform
 import re
 import subprocess
 from pathlib import Path
 
 # Patterns that are almost always destructive; used to upgrade the danger
-# warning even if the model under-rates a command.
+# warning even if the model under-rates a command. Covers POSIX (macOS/Linux)
+# and, at the end, Windows / PowerShell equivalents.
 _DANGEROUS_PATTERNS = [
     r"\brm\s+-[a-z]*r[a-z]*f|\brm\s+-[a-z]*f[a-z]*r",  # rm -rf / -fr
     r"\brm\s+-[a-z]*r\b",                                # any recursive rm
     r"\brm\b[^|<>]*\*",                                  # rm touching a glob
     r"\bdd\s+if=",                                       # dd
-    r"\bmkfs\b",                                          # format
+    r"\bmkfs\b",                                          # format (linux)
     r"\b(sudo\s+)?shutdown\b|\breboot\b",
     r">\s*/dev/sd",                                       # writing to a disk
     r">\s*/dev/disk",
@@ -38,6 +40,13 @@ _DANGEROUS_PATTERNS = [
     r"\bchflags\b[^|]*-R",                                # recursive chflags
     r"\bcrontab\s+-r\b",                                  # wipe crontab
     r"\brsync\b.*--delete",                               # mirror-delete
+    # --- Windows / PowerShell ---
+    r"\bdel\b[^|]*\/[a-z]*[sqf]",                         # del /s /q /f
+    r"\b(rd|rmdir)\b[^|]*\/s",                            # rd /s, rmdir /s
+    r"\bformat\b\s+[a-z]:",                               # format c:
+    r"Remove-Item\b[^|]*-Recurse",                        # Remove-Item -Recurse [-Force]
+    r"\bFormat-Volume\b|\bClear-Disk\b|\bRemove-Partition\b",
+    r"\bcipher\b[^|]*\/w",                                # secure wipe free space
 ]
 
 _DANGEROUS_RE = re.compile("|".join(_DANGEROUS_PATTERNS), re.IGNORECASE)
@@ -54,16 +63,54 @@ def write_command(command: str, output_file: str | Path) -> None:
     path.write_text(command.rstrip("\n") + "\n", encoding="utf-8")
 
 
+def is_windows() -> bool:
+    return os.name == "nt"
+
+
 def user_shell() -> str:
-    """The shell to run subprocess-mode commands under."""
-    return os.environ.get("SHELL", "/bin/zsh")
+    """The shell to run subprocess-mode commands under.
+
+    Resolution order: an explicit hint from the shell integration
+    (``AI_CURRENT_SHELL``), then ``$SHELL`` (set on macOS/Linux/WSL), then a
+    sensible per-OS default (zsh on macOS, bash on Linux, PowerShell/cmd on
+    Windows).
+    """
+    hint = os.environ.get("AI_CURRENT_SHELL")
+    if hint:
+        return hint
+    env_shell = os.environ.get("SHELL")
+    if env_shell:
+        return env_shell
+    if is_windows():
+        return os.environ.get("COMSPEC", "powershell.exe")
+    return "/bin/zsh" if platform.system() == "Darwin" else "/bin/bash"
+
+
+def shell_name(shell: str) -> str:
+    """Bare shell name, e.g. '/usr/bin/bash' -> 'bash', 'powershell.exe' -> 'powershell'.
+
+    Splits on both separators so a Windows path is handled even on POSIX.
+    """
+    base = re.split(r"[\\/]", shell)[-1].lower()
+    return base[:-4] if base.endswith(".exe") else base
+
+
+def build_shell_invocation(shell: str, command: str) -> list[str]:
+    """Build the argv to run *command* under *shell*, per shell family."""
+    name = shell_name(shell)
+    if name in ("powershell", "pwsh"):
+        return [shell, "-NoProfile", "-Command", command]
+    if name == "cmd":
+        return [shell, "/c", command]
+    # POSIX shells: bash, zsh, sh, dash, fish, ksh, …
+    return [shell, "-c", command]
 
 
 def run_in_subprocess(command: str, cwd: Path | None = None) -> int:
     """Run *command* via the user's shell, inheriting cwd and environment."""
     shell = user_shell()
     completed = subprocess.run(
-        [shell, "-c", command],
+        build_shell_invocation(shell, command),
         cwd=str(cwd) if cwd else None,
         check=False,
     )

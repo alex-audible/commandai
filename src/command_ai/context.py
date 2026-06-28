@@ -37,13 +37,59 @@ class DirListing:
         return "\n".join(lines)
 
 
+def _is_wsl() -> bool:
+    """Detect Windows Subsystem for Linux."""
+    if "microsoft" in platform.release().lower():
+        return True
+    try:
+        with open("/proc/version", "r", encoding="utf-8", errors="ignore") as fh:
+            return "microsoft" in fh.read().lower()
+    except OSError:
+        return False
+
+
+def _linux_distro() -> str:
+    """Best-effort pretty distro name from /etc/os-release."""
+    try:
+        with open("/etc/os-release", "r", encoding="utf-8", errors="ignore") as fh:
+            for line in fh:
+                if line.startswith("PRETTY_NAME="):
+                    return line.split("=", 1)[1].strip().strip('"')
+    except OSError:
+        pass
+    return "Linux"
+
+
+def detected_shell() -> str:
+    """The shell the generated command will run in, best-effort.
+
+    Honours ``AI_CURRENT_SHELL`` (set by the shell integration), then ``$SHELL``
+    (macOS/Linux/WSL), then a Windows default.
+    """
+    return (
+        os.environ.get("AI_CURRENT_SHELL")
+        or os.environ.get("SHELL")
+        or (os.environ.get("COMSPEC", "cmd.exe") if os.name == "nt" else "/bin/sh")
+    )
+
+
 def environment_summary(cwd: Path | None = None) -> str:
-    """Human-readable summary of the OS/shell the command will run in."""
+    """Human-readable summary of the OS/shell the command will run in.
+
+    This is what tells the model which platform's commands to generate, so it
+    works on macOS (primary), Linux, WSL, and Windows.
+    """
     cwd = cwd or Path.cwd()
-    shell = os.environ.get("SHELL", "/bin/sh")
+    shell = detected_shell()
     sysname = platform.system()
     if sysname == "Darwin":
         os_label = f"macOS ({platform.mac_ver()[0] or platform.release()})"
+    elif sysname == "Linux":
+        os_label = _linux_distro()
+        if _is_wsl():
+            os_label += " on WSL (Windows Subsystem for Linux)"
+    elif sysname == "Windows":
+        os_label = f"Windows ({platform.release()})"
     else:
         os_label = f"{sysname} ({platform.release()})"
     return (

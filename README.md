@@ -41,11 +41,30 @@ $ ai use ffmpeg to convert all the videos in this folder from mov to mp4
 
 ## Requirements
 
-- macOS (the shell function targets zsh/bash on macOS)
+- **macOS** (primary target), **Linux**, **WSL**, or **Windows** (PowerShell) — see [Platform support](#platform-support)
 - Python 3.11 or later
 - [LM Studio](https://lmstudio.ai) running a local server (see setup below)
 - `pipx` (recommended) or a plain Python virtual environment
 - Internet access only for the optional [web search](#web-search) step; everything else runs locally. Web search uses the [`ddgs`](https://pypi.org/project/ddgs/) package, which is installed automatically as a dependency.
+
+### Platform support
+
+commandai is designed and tuned for **macOS**, and also runs on Linux, WSL, and
+native Windows. The tool tells the model which OS/shell you're on, so it
+generates commands appropriate to your platform (zsh/bash on macOS & Linux,
+PowerShell or cmd on Windows).
+
+| Platform | Install | Shell integration (`ai` command) |
+|---|---|---|
+| **macOS** (primary) | `./install.sh` | `shell/ai.sh` → `~/.zshrc` |
+| **Linux** | `./install.sh` | `shell/ai.sh` → `~/.bashrc`/`~/.zshrc` (auto-detected) |
+| **WSL** | `./install.sh` (inside WSL) | same as Linux — the recommended way to run on Windows |
+| **Windows** (native PowerShell) | `powershell -ExecutionPolicy Bypass -File .\install.ps1` | `shell/ai.ps1` → `$PROFILE` |
+
+Notes:
+- On Linux/WSL the installer auto-detects bash vs zsh and wires the matching rc file.
+- On native Windows, `install.ps1` adds an `ai` function to your PowerShell `$PROFILE` that runs the chosen command in the current session (so `cd`/`$env:` persist). For the most faithful experience on Windows, use **WSL** with `install.sh`.
+- The destructive-command safety check understands both POSIX (`rm -rf`, `dd`, …) and Windows/PowerShell (`Remove-Item -Recurse`, `del /s`, `format`, …) patterns.
 
 ---
 
