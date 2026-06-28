@@ -1,0 +1,38 @@
+# commandai configuration
+#
+# Copy to ~/.config/command-ai/config.toml and edit. Every setting is optional;
+# anything omitted falls back to the built-in default shown here.
+#
+# Precedence (low → high): defaults < this file < env vars < command-line flags.
+# Env var names: AI_BASE_URL, AI_MODEL, AI_API_KEY, AI_TEMPERATURE,
+# AI_MAX_TOKENS, AI_TIMEOUT, AI_MAX_FILES, AI_MAX_DEPTH, AI_INCLUDE_HIDDEN,
+# AI_MAX_EXPLORATIONS.
+
+# --- Endpoint / model (LM Studio OpenAI-compatible server) ---
+base_url = "http://localhost:1234/v1"
+model    = "gemma-4-26b-a4b"
+api_key  = "lm-studio"        # LM Studio ignores this, but the client needs a value
+
+# --- Generation ---
+temperature = 0.2
+max_tokens  = 1024
+timeout     = 120.0           # seconds
+
+# --- Directory context the model sees ---
+[context]
+max_files      = 200          # cap entries shown in the tree
+max_depth      = 2            # how deep the tree goes
+include_hidden = false        # include dotfiles/dotdirs
+
+# --- Filesystem exploration loop ---
+[explore]
+max_explorations = 4          # max directories the model may peek into before answering
+
+# --- Web search (DuckDuckGo, no API key) ---
+# Lets the model look up things like the right Homebrew formula for a described
+# tool, e.g.  ai brew install a tool that flashes bootable images to usb drives
+[web]
+web_search     = true         # set false to disable web search entirely
+max_searches   = 3            # max web searches per request
+search_results = 5            # results returned per search
+search_timeout = 15.0         # seconds

@@ -1,0 +1,37 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "commandai"
+version = "0.1.0"
+description = "Natural-language to shell command, reviewed and run in your current shell, powered by a local LLM."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Alex Jenkins" }]
+keywords = ["cli", "llm", "shell", "ai", "lmstudio", "openai"]
+
+dependencies = [
+    "openai>=1.30",
+    "questionary>=2.0",
+    "rich>=13.0",
+    "ddgs>=6.0",
+    "tomli>=2.0; python_version < '3.11'",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+]
+
+[project.scripts]
+command-ai = "command_ai.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/command_ai"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
