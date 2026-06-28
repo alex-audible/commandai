@@ -25,3 +25,6 @@ htmlcov/
 
 # Local config that may contain endpoints/keys
 config.local.toml
+
+# Harness / tooling state
+.claude/
