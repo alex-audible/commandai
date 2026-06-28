@@ -26,6 +26,7 @@ DEFAULT_API_KEY = "lm-studio"  # LM Studio ignores the key but the SDK requires 
 class Config:
     """Resolved runtime configuration."""
 
+    provider: str = "local"
     base_url: str = DEFAULT_BASE_URL
     model: str = DEFAULT_MODEL
     api_key: str = DEFAULT_API_KEY
@@ -70,6 +71,7 @@ def default_config_path() -> Path:
 # Maps a flat TOML key (also accepted under a [context] table) to the Config
 # field name. Kept flat-friendly so a minimal config "just works".
 _FILE_KEYS = {
+    "provider": "provider",
     "base_url": "base_url",
     "model": "model",
     "api_key": "api_key",
@@ -90,6 +92,7 @@ _FILE_KEYS = {
 }
 
 _ENV_KEYS = {
+    "AI_PROVIDER": ("provider", str),
     "AI_BASE_URL": ("base_url", str),
     "AI_MODEL": ("model", str),
     "AI_API_KEY": ("api_key", str),
@@ -147,6 +150,25 @@ def _from_env(environ: dict[str, str] | None = None) -> dict[str, Any]:
     return out
 
 
+def _apply_provider(cfg: Config, explicit: set[str]) -> Config:
+    """Fill base_url/model from the selected provider unless set explicitly.
+
+    ``explicit`` is the set of fields the user set via file/env/flags; those are
+    never overridden by the provider preset.
+    """
+    from .providers import get_provider
+
+    prov = get_provider(cfg.provider)
+    if not prov:
+        return cfg
+    updates: dict[str, Any] = {}
+    if "base_url" not in explicit:
+        updates["base_url"] = prov["base_url"]
+    if "model" not in explicit:
+        updates["model"] = prov["default_model"]
+    return cfg.with_overrides(**updates) if updates else cfg
+
+
 def load_config(
     config_path: Path | None = None,
     environ: dict[str, str] | None = None,
@@ -157,14 +179,15 @@ def load_config(
 
     path = config_path if config_path is not None else default_config_path()
     file_values = _from_file(path)
+    env_values = _from_env(environ)
+    clean_overrides = {k: v for k, v in (overrides or {}).items() if v is not None}
+    explicit = set(file_values) | set(env_values) | set(clean_overrides)
+
     if file_values:
         cfg = cfg.with_overrides(**file_values)
-
-    env_values = _from_env(environ)
     if env_values:
         cfg = cfg.with_overrides(**env_values)
+    if clean_overrides:
+        cfg = cfg.with_overrides(**clean_overrides)
 
-    if overrides:
-        cfg = cfg.with_overrides(**overrides)
-
-    return cfg
+    return _apply_provider(cfg, explicit)

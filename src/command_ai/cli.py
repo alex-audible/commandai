@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
-from . import __version__
+from . import __version__, credentials, providers
 from .config import Config, default_config_path, load_config
 from .context import gather_context, list_directory, parse_shell_context
 from .executor import (
@@ -34,9 +35,19 @@ def build_parser() -> argparse.ArgumentParser:
         epilog="Example: ai use ffmpeg to convert all the videos here from mov to mp4",
     )
     parser.add_argument("request", nargs="*", help="Natural-language request.")
+    parser.add_argument(
+        "--provider",
+        choices=providers.provider_names(),
+        help="LLM provider preset (sets endpoint/model). Default: local.",
+    )
     parser.add_argument("--model", help="Override the model name.")
     parser.add_argument("--base-url", dest="base_url", help="Override the endpoint base URL.")
     parser.add_argument("--api-key", dest="api_key", help="Override the API key.")
+    parser.add_argument(
+        "--set-api-key",
+        action="store_true",
+        help="Prompt for and securely store the API key for the chosen provider, then exit.",
+    )
     parser.add_argument("--config", help="Path to a config TOML file.")
     parser.add_argument(
         "--output-file",
@@ -83,12 +94,62 @@ def build_parser() -> argparse.ArgumentParser:
 
 def resolve_config(args: argparse.Namespace) -> Config:
     overrides = {
+        "provider": args.provider,
         "model": args.model,
         "base_url": args.base_url,
         "api_key": args.api_key,
     }
     config_path = Path(args.config) if args.config else None
-    return load_config(config_path=config_path, overrides=overrides)
+    config = load_config(config_path=config_path, overrides=overrides)
+
+    # The --provider flag, used explicitly on the command line, is authoritative
+    # for the endpoint: apply its preset over any base_url/model pinned in the
+    # config file (but not over --base-url/--model given on the same command).
+    if args.provider:
+        prov = providers.get_provider(args.provider)
+        if prov:
+            updates: dict = {}
+            if not args.base_url:
+                updates["base_url"] = prov["base_url"]
+            if not args.model:
+                updates["model"] = prov["default_model"]
+            if updates:
+                config = config.with_overrides(**updates)
+    return config
+
+
+def resolve_api_key(args: argparse.Namespace, config: Config) -> str | None:
+    """Resolve the API key for the chosen provider.
+
+    Precedence: explicit --api-key / AI_API_KEY (already in config.api_key) >
+    stored key (keychain/file) > interactive prompt. Returns None if a required
+    key can't be obtained (e.g. non-interactive with nothing stored).
+    """
+    prov = providers.get_provider(config.provider) or providers.get_provider(
+        providers.DEFAULT_PROVIDER
+    )
+    if not prov["requires_key"]:
+        return config.api_key
+
+    # An explicitly-provided key (flag or env) wins and is not the local placeholder.
+    explicit = args.api_key or os.environ.get("AI_API_KEY")
+    if explicit:
+        return explicit
+    if config.api_key and config.api_key not in ("", "lm-studio"):
+        return config.api_key
+
+    stored = credentials.get_api_key(config.provider)
+    if stored:
+        return stored
+
+    # Nothing stored: ask for it interactively, offer to save.
+    key = ui.prompt_api_key(config.provider, prov)
+    if not key:
+        return None
+    if ui.confirm_store_key(credentials.storage_location()):
+        where = credentials.set_api_key(config.provider, key)
+        ui.print_info(f"Saved to {where}.")
+    return key
 
 
 def default_searcher(config: Config):
@@ -217,9 +278,27 @@ def main(argv: list[str] | None = None) -> int:
         ui.print_error(f"Failed to load config: {exc}")
         return 2
 
+    # Set-and-store an API key, then exit.
+    if args.set_api_key:
+        prov = providers.get_provider(config.provider)
+        if not prov:
+            ui.print_error(f"Unknown provider: {config.provider}")
+            return 2
+        if not prov["requires_key"]:
+            ui.print_info(f"Provider '{config.provider}' does not require an API key.")
+            return 0
+        key = ui.prompt_api_key(config.provider, prov)
+        if not key:
+            ui.print_error("No key entered.")
+            return 1
+        where = credentials.set_api_key(config.provider, key)
+        ui.print_info(f"Saved {config.provider} API key to {where}.")
+        return 0
+
     if args.print_config:
         ui.print_info(f"config file: {Path(args.config) if args.config else default_config_path()}")
         for fld in (
+            "provider",
             "base_url",
             "model",
             "api_key",
@@ -248,6 +327,17 @@ def main(argv: list[str] | None = None) -> int:
     if not request:
         parser.print_help(sys.stderr)
         return 2
+
+    # Resolve the API key for the provider (may prompt + store for OpenRouter).
+    api_key = resolve_api_key(args, config)
+    if api_key is None:
+        prov = providers.get_provider(config.provider)
+        ui.print_error(
+            f"{prov['label'] if prov else config.provider} needs an API key. "
+            f"Run `ai --provider {config.provider} --set-api-key`, or set AI_API_KEY."
+        )
+        return 2
+    config = config.with_overrides(api_key=api_key)
 
     cwd = Path.cwd()
     client = LLMClient(config)

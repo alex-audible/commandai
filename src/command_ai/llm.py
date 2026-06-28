@@ -294,11 +294,18 @@ class LLMClient:
             raise LLMError(
                 "The 'openai' package is required. Install with: pip install openai"
             ) from exc
-        self._client = OpenAI(
+        kwargs: dict[str, Any] = dict(
             base_url=self.config.base_url,
             api_key=self.config.api_key,
             timeout=self.config.timeout,
         )
+        # OpenRouter likes (optional) attribution headers; harmless elsewhere.
+        if "openrouter.ai" in (self.config.base_url or ""):
+            kwargs["default_headers"] = {
+                "HTTP-Referer": "https://github.com/alex-audible/commandai",
+                "X-Title": "commandai",
+            }
+        self._client = OpenAI(**kwargs)
         return self._client
 
     def complete(self, messages: list[dict[str, str]]) -> str:

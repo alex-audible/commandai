@@ -206,3 +206,77 @@ class TestInteractive:
     def test_returns_bool(self):
         result = ui._interactive()
         assert isinstance(result, bool)
+
+
+# ---------------------------------------------------------------------------
+# prompt_api_key
+# ---------------------------------------------------------------------------
+
+OPENROUTER_INFO = {
+    "label": "OpenRouter",
+    "signup_url": "https://openrouter.ai/keys",
+}
+
+
+class TestPromptApiKey:
+    def test_non_tty_returns_none(self, monkeypatch):
+        monkeypatch.setattr(ui, "_interactive", lambda: False)
+        assert ui.prompt_api_key("openrouter", OPENROUTER_INFO) is None
+
+    def test_interactive_returns_entered_key(self, monkeypatch):
+        monkeypatch.setattr(ui, "_interactive", lambda: True)
+        import getpass
+        monkeypatch.setattr(getpass, "getpass", lambda prompt="": "sk-typed")
+        assert ui.prompt_api_key("openrouter", OPENROUTER_INFO) == "sk-typed"
+
+    def test_interactive_strips_whitespace(self, monkeypatch):
+        monkeypatch.setattr(ui, "_interactive", lambda: True)
+        import getpass
+        monkeypatch.setattr(getpass, "getpass", lambda prompt="": "  sk-x  ")
+        assert ui.prompt_api_key("openrouter", OPENROUTER_INFO) == "sk-x"
+
+    def test_interactive_empty_returns_none(self, monkeypatch):
+        monkeypatch.setattr(ui, "_interactive", lambda: True)
+        import getpass
+        monkeypatch.setattr(getpass, "getpass", lambda prompt="": "   ")
+        assert ui.prompt_api_key("openrouter", OPENROUTER_INFO) is None
+
+    def test_interactive_eoferror_returns_none(self, monkeypatch):
+        monkeypatch.setattr(ui, "_interactive", lambda: True)
+        import getpass
+        def boom(prompt=""):
+            raise EOFError
+        monkeypatch.setattr(getpass, "getpass", boom)
+        assert ui.prompt_api_key("openrouter", OPENROUTER_INFO) is None
+
+    def test_no_signup_url_ok(self, monkeypatch):
+        monkeypatch.setattr(ui, "_interactive", lambda: True)
+        import getpass
+        monkeypatch.setattr(getpass, "getpass", lambda prompt="": "sk-x")
+        info = {"label": "Local"}  # no signup_url
+        assert ui.prompt_api_key("local", info) == "sk-x"
+
+
+# ---------------------------------------------------------------------------
+# confirm_store_key
+# ---------------------------------------------------------------------------
+
+class TestConfirmStoreKey:
+    def test_non_tty_returns_false(self, monkeypatch):
+        monkeypatch.setattr(ui, "_interactive", lambda: False)
+        assert ui.confirm_store_key("the OS keychain") is False
+
+    def test_interactive_confirms_true(self, monkeypatch):
+        monkeypatch.setattr(ui, "_interactive", lambda: True)
+        monkeypatch.setattr("questionary.confirm", fake_questionary_confirm(True))
+        assert ui.confirm_store_key("the OS keychain") is True
+
+    def test_interactive_denies_false(self, monkeypatch):
+        monkeypatch.setattr(ui, "_interactive", lambda: True)
+        monkeypatch.setattr("questionary.confirm", fake_questionary_confirm(False))
+        assert ui.confirm_store_key("the OS keychain") is False
+
+    def test_interactive_none_returns_false(self, monkeypatch):
+        monkeypatch.setattr(ui, "_interactive", lambda: True)
+        monkeypatch.setattr("questionary.confirm", fake_questionary_confirm(None))
+        assert ui.confirm_store_key("the OS keychain") is False

@@ -126,6 +126,44 @@ def select_command(
     return options[answer]
 
 
+def prompt_api_key(provider_name: str, provider_info: dict) -> str | None:
+    """Interactively ask for an API key (hidden input). None if not a TTY/empty."""
+    if not _interactive():
+        return None
+    import getpass
+
+    label = provider_info.get("label", provider_name)
+    console.print(
+        Panel(
+            Text(f"{label} needs an API key to use.", style="bold"),
+            border_style="yellow",
+        )
+    )
+    signup = provider_info.get("signup_url")
+    if signup:
+        print_info(f"Get one at: {signup}")
+    try:
+        key = getpass.getpass(f"Enter your {label} API key (input hidden): ")
+    except (EOFError, KeyboardInterrupt):
+        return None
+    key = key.strip()
+    return key or None
+
+
+def confirm_store_key(location: str) -> bool:
+    """Ask whether to persist the key. Returns False when non-interactive."""
+    if not _interactive():
+        return False
+    import questionary
+
+    return bool(
+        questionary.confirm(
+            f"Save this key in {location} for next time?",
+            default=True,
+        ).ask()
+    )
+
+
 def confirm_dangerous(option: CommandOption) -> bool:
     """Extra confirmation for high-danger commands. Returns True to proceed."""
     console.print(

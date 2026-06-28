@@ -34,7 +34,8 @@ $ ai use ffmpeg to convert all the videos in this folder from mov to mp4
 - **Shell-context aware** — sees the previous command's exit code and your recent command history, so you can ask it to fix or follow up on what just ran — e.g. `ai fix that` after a failed `git push`. It never reads command output, only the command lines plus the exit status, and it can be turned off.
 - **Runs in your current shell** — `cd`, `export`, and other shell-state changes persist, because the chosen command is `eval`'d by the `ai` shell function rather than a child process.
 - **Safety gates** — the command is always shown before execution; destructive patterns (`rm -rf`, `dd`, `mkfs`, `curl | sh`, …) require an extra explicit confirmation.
-- **Local and private** — all inference runs through LM Studio on your machine; nothing leaves your laptop.
+- **Local and private** — by default all inference runs through LM Studio on your machine; nothing leaves your laptop.
+- **Multiple providers** — works with a local OpenAI-compatible server (LM Studio or Ollama, the default) or hosted [OpenRouter](https://openrouter.ai). Pick your provider once in settings, then just run `ai ...` with no flags. API keys are stored securely in your OS keychain.
 - **Fully configurable** — endpoint, model, temperature, context depth, and more are all adjustable via config file, environment variable, or CLI flag.
 
 ---
@@ -45,7 +46,7 @@ $ ai use ffmpeg to convert all the videos in this folder from mov to mp4
 - Python 3.11 or later
 - [LM Studio](https://lmstudio.ai) running a local server (see setup below)
 - `pipx` (recommended) or a plain Python virtual environment
-- Internet access only for the optional [web search](#web-search) step; everything else runs locally. Web search uses the [`ddgs`](https://pypi.org/project/ddgs/) package, which is installed automatically as a dependency.
+- Internet access only for the optional [web search](#web-search) step and for hosted providers like OpenRouter; the default local provider runs entirely on your machine. Web search uses the [`ddgs`](https://pypi.org/project/ddgs/) package, and secure API-key storage uses [`keyring`](https://pypi.org/project/keyring/); both are installed automatically as dependencies.
 
 ### Platform support
 
@@ -181,8 +182,11 @@ Destructive commands (those rated `danger: high` by the model, or those matching
 | `--no-web` | Disable web search for this invocation, even if it is enabled in config. |
 | `--no-shell-context` | Disable shell-context (recent history + previous exit code) for this invocation. |
 | `--print-config` | Print the resolved configuration (endpoint, model, all settings) and exit. Useful for debugging. |
+| `--provider {local,openrouter}` | Optional per-run override of the provider preset (sets endpoint/model). Normally set once in [settings](#providers). |
+| `--set-api-key` | Prompt for and securely store the API key for the chosen provider, then exit. |
 | `--model MODEL` | Use a different model for this invocation. |
 | `--base-url URL` | Use a different endpoint for this invocation. |
+| `--api-key KEY` | Use a specific API key for this invocation (overrides stored/config keys). |
 | `--config PATH` | Load config from a specific TOML file instead of the default location. |
 | `--version` | Print the version and exit. |
 
@@ -209,10 +213,21 @@ The config file lives at `~/.config/command-ai/config.toml`. If `$XDG_CONFIG_HOM
 ```toml
 # ~/.config/command-ai/config.toml
 
-# Endpoint / model
-base_url = "http://localhost:1234/v1"
-model    = "gemma-4-26b-a4b"
-api_key  = "lm-studio"   # LM Studio ignores this value; any non-empty string works
+# Provider preset: "local" (LM Studio / Ollama, default) or "openrouter".
+# Set everything you want HERE so you never have to pass flags — once configured,
+# you just type:  ai <request>
+provider = "local"
+
+# Endpoint / model — default from the provider above; set them to override.
+# base_url = "http://localhost:1234/v1"
+# model    = "gemma-4-26b-a4b"
+# api_key  = "lm-studio"   # local ignores this value
+
+# To use OpenRouter entirely from settings (no flags), set:
+#   provider = "openrouter"
+#   model    = "anthropic/claude-3.5-sonnet"   # any OpenRouter model id
+# then store your key once with `ai --provider openrouter --set-api-key`
+# (or put `api_key = "sk-or-v1-..."` here in plaintext).
 
 # Generation
 temperature       = 0.2
@@ -243,12 +258,57 @@ shell_context = true     # set false to never send shell history/exit code
 max_history   = 15       # how many recent command lines to include
 ```
 
+### Providers
+
+A *provider* is a preset for an OpenAI-compatible endpoint. Selecting one sets a sensible `base_url` and default model so you don't have to remember URLs.
+
+| Provider | API key | Default `base_url` | Default model |
+|---|---|---|---|
+| `local` (default) | not needed | `http://localhost:1234/v1` | `gemma-4-26b-a4b` |
+| `openrouter` | required | `https://openrouter.ai/api/v1` | `openai/gpt-4o-mini` |
+
+**Settings-first setup (recommended).** Configure your provider once and then just type `ai <request>` with no flags. To use OpenRouter from settings, put this in `~/.config/command-ai/config.toml`:
+
+```toml
+provider = "openrouter"
+model    = "anthropic/claude-3.5-sonnet"   # any OpenRouter model id
+```
+
+Then provide your API key **once**, either:
+
+- **(a) the secure way** — store it in your OS keychain:
+
+  ```bash
+  ai --provider openrouter --set-api-key
+  ```
+
+- **(b) plaintext in the config file** — add `api_key = "sk-or-v1-..."` to `config.toml`.
+
+After that, day-to-day usage is simply:
+
+```bash
+ai <request>
+```
+
+**How the preset fills things in.** Selecting a provider auto-sets `base_url` and `model`; you can override either in settings (a `base_url` or `model` you set explicitly is kept). When `--provider` is given on the command line it is authoritative for the endpoint — it applies its preset over a `base_url` pinned in the config file. A config-file `base_url` is otherwise respected, so custom local servers (Ollama, llama.cpp, a non-default port) keep working.
+
+**API key resolution.** Keys are resolved in this order:
+
+```
+--api-key flag / AI_API_KEY env  >  a real api_key in the config file  >  stored key (keychain or fallback file)  >  interactive prompt
+```
+
+Keys are stored in the OS keychain via the [`keyring`](https://pypi.org/project/keyring/) package (macOS Keychain, Windows Credential Locker, Linux Secret Service). If no keychain backend is available, they fall back to `~/.config/command-ai/credentials.json` with `0600` permissions. The key is masked in `ai --print-config` and never logged.
+
+Use `ai --set-api-key` to store a key for the current provider (the prompt is hidden) and exit. If you run an OpenRouter request with no key configured, commandai prompts for it once and offers to save it for next time.
+
 ### Environment variables
 
 Every setting can be overridden by an environment variable without touching the config file:
 
 | Variable | Config key | Type | Default |
 |---|---|---|---|
+| `AI_PROVIDER` | `provider` | string | `local` |
 | `AI_BASE_URL` | `base_url` | string | `http://localhost:1234/v1` |
 | `AI_MODEL` | `model` | string | `gemma-4-26b-a4b` |
 | `AI_API_KEY` | `api_key` | string | `lm-studio` |

@@ -8,10 +8,33 @@
 # AI_MAX_TOKENS, AI_TIMEOUT, AI_MAX_FILES, AI_MAX_DEPTH, AI_INCLUDE_HIDDEN,
 # AI_MAX_EXPLORATIONS.
 
-# --- Endpoint / model (LM Studio OpenAI-compatible server) ---
-base_url = "http://localhost:1234/v1"
-model    = "gemma-4-26b-a4b"
-api_key  = "lm-studio"        # LM Studio ignores this, but the client needs a value
+# --- Provider preset ---
+# "local"      = an OpenAI-compatible server on your machine (LM Studio, Ollama…)
+# "openrouter" = https://openrouter.ai (hosted; needs an API key)
+#
+# Set everything you want HERE so you never have to pass flags — once configured,
+# you just type:  ai <request>
+provider = "local"
+
+# --- Endpoint / model ---
+# base_url and model default from the provider above; set them to override.
+# model    = "gemma-4-26b-a4b"
+# base_url = "http://localhost:1234/v1"
+# api_key  = "lm-studio"      # local ignores this
+
+# ─────────────────────────────────────────────────────────────────────────────
+# To use OpenRouter entirely from settings (no flags, fast):
+#
+#   1. Set:
+#        provider = "openrouter"
+#        model    = "anthropic/claude-3.5-sonnet"   # any OpenRouter model id
+#   2. Provide your API key ONCE, either:
+#        a) the secure way — store it in your OS keychain:
+#             ai --provider openrouter --set-api-key
+#        b) or just put it here (plaintext in this file):
+#             api_key = "sk-or-v1-..."
+#   3. Then simply run:  ai <request>
+# ─────────────────────────────────────────────────────────────────────────────
 
 # --- Generation ---
 temperature       = 0.2

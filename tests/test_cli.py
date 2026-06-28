@@ -10,6 +10,8 @@ from typing import Iterator
 import pytest
 
 import command_ai.cli as cli
+import command_ai.credentials as credentials
+import command_ai.providers as providers
 import command_ai.search as search
 import command_ai.ui as ui
 from command_ai.config import Config
@@ -160,6 +162,36 @@ class TestBuildParser:
             parser.parse_args(["--version"])
         assert exc_info.value.code == 0
 
+    def test_provider_flag_local(self):
+        parser = cli.build_parser()
+        args = parser.parse_args(["--provider", "local", "do", "x"])
+        assert args.provider == "local"
+
+    def test_provider_flag_openrouter(self):
+        parser = cli.build_parser()
+        args = parser.parse_args(["--provider", "openrouter", "do", "x"])
+        assert args.provider == "openrouter"
+
+    def test_provider_invalid_choice_rejected(self):
+        parser = cli.build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["--provider", "bogus", "do", "x"])
+
+    def test_provider_default_none(self):
+        parser = cli.build_parser()
+        args = parser.parse_args(["do", "x"])
+        assert args.provider is None
+
+    def test_set_api_key_flag(self):
+        parser = cli.build_parser()
+        args = parser.parse_args(["--set-api-key", "--provider", "openrouter"])
+        assert args.set_api_key is True
+
+    def test_set_api_key_default_false(self):
+        parser = cli.build_parser()
+        args = parser.parse_args(["do", "x"])
+        assert args.set_api_key is False
+
 
 # ---------------------------------------------------------------------------
 # resolve_config
@@ -197,6 +229,122 @@ class TestResolveConfig:
         args = parser.parse_args(["--config", str(toml), "do", "x"])
         cfg = cli.resolve_config(args)
         assert cfg.model == "file-model"
+
+    def test_provider_flag_authoritative_over_config_base_url(self, tmp_path):
+        # Config file pins a base_url; --provider openrouter overrides it.
+        toml = tmp_path / "c.toml"
+        toml.write_text('base_url = "http://pinned/v1"\n', encoding="utf-8")
+        parser = cli.build_parser()
+        args = parser.parse_args(
+            ["--config", str(toml), "--provider", "openrouter", "do", "x"]
+        )
+        cfg = cli.resolve_config(args)
+        assert cfg.base_url == "https://openrouter.ai/api/v1"
+        assert cfg.model == "openai/gpt-4o-mini"
+
+    def test_explicit_base_url_kept_over_provider_flag(self, tmp_path):
+        toml = tmp_path / "c.toml"
+        toml.write_text("", encoding="utf-8")
+        parser = cli.build_parser()
+        args = parser.parse_args(
+            [
+                "--config", str(toml),
+                "--provider", "openrouter",
+                "--base-url", "http://explicit/v1",
+                "do", "x",
+            ]
+        )
+        cfg = cli.resolve_config(args)
+        assert cfg.base_url == "http://explicit/v1"
+
+    def test_no_provider_flag_respects_config_base_url(self, tmp_path):
+        toml = tmp_path / "c.toml"
+        toml.write_text('base_url = "http://from-file/v1"\n', encoding="utf-8")
+        parser = cli.build_parser()
+        args = parser.parse_args(["--config", str(toml), "do", "x"])
+        cfg = cli.resolve_config(args)
+        assert cfg.base_url == "http://from-file/v1"
+
+
+# ---------------------------------------------------------------------------
+# resolve_api_key
+# ---------------------------------------------------------------------------
+
+def make_api_key_args(api_key=None, provider=None):
+    return argparse.Namespace(api_key=api_key, provider=provider)
+
+
+class TestResolveApiKey:
+    def test_local_returns_config_api_key_no_prompt(self, monkeypatch):
+        monkeypatch.delenv("AI_API_KEY", raising=False)
+        # Spy: prompt must not be called for a no-key provider.
+        called = []
+        monkeypatch.setattr(ui, "prompt_api_key", lambda *a, **k: called.append(1) or "x")
+        args = make_api_key_args(provider="local")
+        cfg = Config(provider="local", api_key="lm-studio")
+        result = cli.resolve_api_key(args, cfg)
+        assert result == "lm-studio"
+        assert called == []
+
+    def test_openrouter_flag_key_wins(self, monkeypatch):
+        monkeypatch.delenv("AI_API_KEY", raising=False)
+        args = make_api_key_args(api_key="sk-flag", provider="openrouter")
+        cfg = Config(provider="openrouter", api_key="lm-studio")
+        assert cli.resolve_api_key(args, cfg) == "sk-flag"
+
+    def test_openrouter_env_key(self, monkeypatch):
+        monkeypatch.setenv("AI_API_KEY", "sk-env")
+        args = make_api_key_args(provider="openrouter")
+        cfg = Config(provider="openrouter", api_key="lm-studio")
+        assert cli.resolve_api_key(args, cfg) == "sk-env"
+
+    def test_openrouter_config_real_key(self, monkeypatch):
+        monkeypatch.delenv("AI_API_KEY", raising=False)
+        args = make_api_key_args(provider="openrouter")
+        cfg = Config(provider="openrouter", api_key="sk-real")
+        assert cli.resolve_api_key(args, cfg) == "sk-real"
+
+    def test_openrouter_stored_key(self, monkeypatch):
+        monkeypatch.delenv("AI_API_KEY", raising=False)
+        monkeypatch.setattr(cli.credentials, "get_api_key", lambda p: "sk-stored")
+        args = make_api_key_args(provider="openrouter")
+        cfg = Config(provider="openrouter", api_key="lm-studio")
+        assert cli.resolve_api_key(args, cfg) == "sk-stored"
+
+    def test_openrouter_prompt_no_store(self, monkeypatch):
+        monkeypatch.delenv("AI_API_KEY", raising=False)
+        monkeypatch.setattr(cli.credentials, "get_api_key", lambda p: None)
+        monkeypatch.setattr(cli.ui, "prompt_api_key", lambda name, info: "sk-new")
+        monkeypatch.setattr(cli.ui, "confirm_store_key", lambda loc: False)
+        set_calls = []
+        monkeypatch.setattr(cli.credentials, "set_api_key", lambda p, k: set_calls.append((p, k)) or "file")
+        args = make_api_key_args(provider="openrouter")
+        cfg = Config(provider="openrouter", api_key="lm-studio")
+        result = cli.resolve_api_key(args, cfg)
+        assert result == "sk-new"
+        assert set_calls == []  # not stored
+
+    def test_openrouter_prompt_and_store(self, monkeypatch):
+        monkeypatch.delenv("AI_API_KEY", raising=False)
+        monkeypatch.setattr(cli.credentials, "get_api_key", lambda p: None)
+        monkeypatch.setattr(cli.ui, "prompt_api_key", lambda name, info: "sk-new")
+        monkeypatch.setattr(cli.ui, "confirm_store_key", lambda loc: True)
+        monkeypatch.setattr(cli.credentials, "storage_location", lambda: "the OS keychain")
+        set_calls = []
+        monkeypatch.setattr(cli.credentials, "set_api_key", lambda p, k: set_calls.append((p, k)) or "keychain")
+        args = make_api_key_args(provider="openrouter")
+        cfg = Config(provider="openrouter", api_key="lm-studio")
+        result = cli.resolve_api_key(args, cfg)
+        assert result == "sk-new"
+        assert set_calls == [("openrouter", "sk-new")]
+
+    def test_openrouter_prompt_returns_none(self, monkeypatch):
+        monkeypatch.delenv("AI_API_KEY", raising=False)
+        monkeypatch.setattr(cli.credentials, "get_api_key", lambda p: None)
+        monkeypatch.setattr(cli.ui, "prompt_api_key", lambda name, info: None)
+        args = make_api_key_args(provider="openrouter")
+        cfg = Config(provider="openrouter", api_key="lm-studio")
+        assert cli.resolve_api_key(args, cfg) is None
 
 
 # ---------------------------------------------------------------------------
@@ -752,6 +900,7 @@ class TestMain:
         rc = cli.main(["--print-config"])
         assert rc == 0
         joined = "\n".join(printed)
+        assert "provider = local" in joined
         assert "shell_context = True" in joined
         assert "max_history = 15" in joined
         assert "max_parse_retries = 2" in joined
@@ -804,3 +953,59 @@ class TestMain:
         )
         assert rc == 0
         assert "ls -la" in out.read_text(encoding="utf-8")
+
+    # --- provider / API key management ---
+
+    def test_set_api_key_local_returns_0(self, monkeypatch):
+        # Local provider does not require a key -> prints "does not require", returns 0.
+        prompt_calls = []
+        monkeypatch.setattr(ui, "prompt_api_key", lambda *a, **k: prompt_calls.append(1) or "x")
+        rc = cli.main(["--set-api-key", "--provider", "local"])
+        assert rc == 0
+        assert prompt_calls == []  # never prompted
+
+    def test_set_api_key_openrouter_returns_0(self, monkeypatch):
+        monkeypatch.setattr(cli.ui, "prompt_api_key", lambda name, info: "k")
+        set_calls = []
+        monkeypatch.setattr(
+            cli.credentials, "set_api_key", lambda p, k: set_calls.append((p, k)) or "keychain"
+        )
+        rc = cli.main(["--set-api-key", "--provider", "openrouter"])
+        assert rc == 0
+        assert set_calls == [("openrouter", "k")]
+
+    def test_set_api_key_openrouter_no_key_returns_1(self, monkeypatch):
+        # Prompt returns None -> "No key entered." -> return 1.
+        monkeypatch.setattr(cli.ui, "prompt_api_key", lambda name, info: None)
+        rc = cli.main(["--set-api-key", "--provider", "openrouter"])
+        assert rc == 1
+
+    def test_provider_openrouter_no_key_returns_2(self, monkeypatch):
+        # resolve_api_key returns None -> required-key error -> return 2.
+        self._patch_llm(monkeypatch, [ANSWER_JSON])
+        monkeypatch.setattr(cli, "resolve_api_key", lambda args, config: None)
+        rc = cli.main(["--provider", "openrouter", "list", "files"])
+        assert rc == 2
+
+    def test_provider_openrouter_with_key_happy_path(self, monkeypatch, tmp_path):
+        # Provide a key via flag so resolve_api_key returns it; end-to-end success.
+        self._patch_llm(monkeypatch, [ANSWER_JSON])
+        opt = CommandOption(command="ls -la", summary="list", danger="low")
+        self._patch_select(monkeypatch, opt)
+        out = tmp_path / "cmd.sh"
+        rc = cli.main(
+            ["--provider", "openrouter", "--api-key", "sk-flag",
+             "--output-file", str(out), "list", "files"]
+        )
+        assert rc == 0
+        assert "ls -la" in out.read_text(encoding="utf-8")
+
+    def test_print_config_includes_provider(self, monkeypatch, tmp_path):
+        toml = tmp_path / "c.toml"
+        toml.write_text('provider = "openrouter"\n', encoding="utf-8")
+        printed = []
+        monkeypatch.setattr(ui, "print_info", lambda msg: printed.append(msg))
+        rc = cli.main(["--config", str(toml), "--print-config"])
+        assert rc == 0
+        joined = "\n".join(printed)
+        assert "provider = openrouter" in joined

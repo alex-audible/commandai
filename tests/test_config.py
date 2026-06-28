@@ -22,6 +22,10 @@ from command_ai.config import (
 # ---------------------------------------------------------------------------
 
 class TestConfigDefaults:
+    def test_default_provider(self):
+        cfg = Config()
+        assert cfg.provider == "local"
+
     def test_default_base_url(self):
         cfg = Config()
         assert cfg.base_url == DEFAULT_BASE_URL
@@ -450,3 +454,89 @@ class TestLoadConfigPrecedence:
         assert cfg.temperature == 0.5
         # override sets max_tokens
         assert cfg.max_tokens == 512
+
+
+# ---------------------------------------------------------------------------
+# Provider presets (_apply_provider integration via load_config)
+# ---------------------------------------------------------------------------
+
+NONEXISTENT = Path("/nonexistent-test-config-xyz.toml")
+
+
+class TestProviderIntegration:
+    def test_openrouter_sets_base_url_and_model(self):
+        cfg = load_config(
+            config_path=NONEXISTENT, environ={}, overrides={"provider": "openrouter"}
+        )
+        assert cfg.base_url == "https://openrouter.ai/api/v1"
+        assert cfg.model == "openai/gpt-4o-mini"
+
+    def test_explicit_base_url_kept_with_provider(self):
+        cfg = load_config(
+            config_path=NONEXISTENT,
+            environ={},
+            overrides={"provider": "openrouter", "base_url": "http://x/v1"},
+        )
+        # base_url is explicit -> kept; model not explicit -> provider default
+        assert cfg.base_url == "http://x/v1"
+        assert cfg.model == "openai/gpt-4o-mini"
+
+    def test_explicit_model_kept_with_provider(self):
+        cfg = load_config(
+            config_path=NONEXISTENT,
+            environ={},
+            overrides={"provider": "openrouter", "model": "my-model"},
+        )
+        assert cfg.model == "my-model"
+        assert cfg.base_url == "https://openrouter.ai/api/v1"
+
+    def test_default_no_provider_unchanged(self):
+        cfg = load_config(config_path=NONEXISTENT, environ={})
+        assert cfg.provider == "local"
+        assert cfg.base_url == "http://localhost:1234/v1"
+        assert cfg.model == "gemma-4-26b-a4b"
+
+    def test_env_provider_applied(self):
+        cfg = load_config(config_path=NONEXISTENT, environ={"AI_PROVIDER": "openrouter"})
+        assert cfg.base_url == "https://openrouter.ai/api/v1"
+        assert cfg.model == "openai/gpt-4o-mini"
+
+    def test_unknown_provider_is_noop(self):
+        cfg = load_config(
+            config_path=NONEXISTENT, environ={}, overrides={"provider": "nope"}
+        )
+        # _apply_provider no-op: base_url stays at the localhost default
+        assert cfg.base_url == "http://localhost:1234/v1"
+        assert cfg.model == "gemma-4-26b-a4b"
+        assert cfg.provider == "nope"
+
+    def test_toml_file_provider_applied(self, tmp_path):
+        toml = tmp_path / "config.toml"
+        toml.write_text('provider = "openrouter"\n', encoding="utf-8")
+        cfg = load_config(config_path=toml, environ={})
+        assert cfg.provider == "openrouter"
+        assert cfg.base_url == "https://openrouter.ai/api/v1"
+        assert cfg.model == "openai/gpt-4o-mini"
+
+    def test_toml_provider_with_pinned_base_url(self, tmp_path):
+        # base_url pinned in file is explicit -> provider does not override it.
+        toml = tmp_path / "config.toml"
+        toml.write_text(
+            'provider = "openrouter"\nbase_url = "http://pinned/v1"\n', encoding="utf-8"
+        )
+        cfg = load_config(config_path=toml, environ={})
+        assert cfg.base_url == "http://pinned/v1"
+        assert cfg.model == "openai/gpt-4o-mini"
+
+    def test_ai_provider_env_var_string(self):
+        cfg = load_config(config_path=NONEXISTENT, environ={"AI_PROVIDER": "local"})
+        assert cfg.provider == "local"
+
+    def test_provider_override_beats_file(self, tmp_path):
+        toml = tmp_path / "config.toml"
+        toml.write_text('provider = "local"\n', encoding="utf-8")
+        cfg = load_config(
+            config_path=toml, environ={}, overrides={"provider": "openrouter"}
+        )
+        assert cfg.provider == "openrouter"
+        assert cfg.base_url == "https://openrouter.ai/api/v1"
