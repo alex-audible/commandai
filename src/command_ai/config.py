@@ -51,6 +51,9 @@ class Config:
     shell_context: bool = True
     max_history: int = 15
 
+    # Robustness: how many times to re-ask when the model returns unparseable JSON
+    max_parse_retries: int = 2
+
     def with_overrides(self, **kwargs: Any) -> "Config":
         """Return a copy with the given non-None overrides applied."""
         clean = {k: v for k, v in kwargs.items() if v is not None}
@@ -83,6 +86,7 @@ _FILE_KEYS = {
     "search_timeout": "search_timeout",
     "shell_context": "shell_context",
     "max_history": "max_history",
+    "max_parse_retries": "max_parse_retries",
 }
 
 _ENV_KEYS = {
@@ -102,6 +106,7 @@ _ENV_KEYS = {
     "AI_SEARCH_TIMEOUT": ("search_timeout", float),
     "AI_SHELL_CONTEXT": ("shell_context", lambda v: str(v).lower() in ("1", "true", "yes", "on")),
     "AI_MAX_HISTORY": ("max_history", int),
+    "AI_MAX_PARSE_RETRIES": ("max_parse_retries", int),
 }
 
 

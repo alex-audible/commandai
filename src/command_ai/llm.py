@@ -9,10 +9,28 @@ wrap JSON in prose or code fences.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
 from .config import Config
+
+# Reasoning wrappers some local models emit around their real answer.
+_THINK_RE = re.compile(r"<\s*(think|thinking|reasoning)\s*>.*?<\s*/\s*\1\s*>", re.DOTALL | re.IGNORECASE)
+# Trailing commas before a closing brace/bracket (invalid JSON, common from LLMs).
+_TRAILING_COMMA_RE = re.compile(r",(\s*[}\]])")
+
+
+def _loads(text: str) -> dict[str, Any]:
+    """json.loads tolerant of the mistakes local models make.
+
+    ``strict=False`` allows literal newlines/tabs inside string values (very
+    common when a command spans multiple lines), and we strip trailing commas.
+    """
+    try:
+        return json.loads(text, strict=False)
+    except json.JSONDecodeError:
+        return json.loads(_TRAILING_COMMA_RE.sub(r"\1", text), strict=False)
 
 
 class LLMError(RuntimeError):
@@ -94,6 +112,9 @@ genuinely ambiguous, and make each option meaningfully different.
 - Set "danger" to "high" for destructive/irreversible actions (deleting, \
 overwriting, formatting, recursive force), "medium" for changes that modify \
 files, "low" for read-only/safe actions.
+- Inside JSON string values, escape special characters: write \\" for a double \
+quote and \\n for a newline. To keep the command field simple, prefer single \
+quotes in the shell command itself where possible.
 - Output raw JSON only. No markdown, no code fences, no commentary.\
 """
 
@@ -153,16 +174,18 @@ def extract_json(text: str) -> dict[str, Any]:
     if not text:
         raise LLMError("Empty response from the model.")
 
-    # Fast path: the whole thing is JSON.
-    stripped = text.strip()
+    # Drop any <think>…</think> reasoning blocks before looking for JSON.
+    stripped = _THINK_RE.sub("", text).strip()
     # Bound the work the balanced-brace scanner below can do, so a garbled
     # model response (e.g. thousands of stray "{") can't cause a long hang
     # even if max_tokens is raised.
     MAX_SCAN = 200_000
     if len(stripped) > MAX_SCAN:
         stripped = stripped[:MAX_SCAN]
+
+    # Fast path: the whole thing is JSON.
     try:
-        return json.loads(stripped)
+        return _loads(stripped)
     except json.JSONDecodeError:
         pass
 
@@ -175,7 +198,7 @@ def extract_json(text: str) -> dict[str, Any]:
                 chunk = chunk[4:].strip()
             if chunk.startswith("{"):
                 try:
-                    return json.loads(chunk)
+                    return _loads(chunk)
                 except json.JSONDecodeError:
                     continue
 
@@ -207,7 +230,7 @@ def extract_json(text: str) -> dict[str, Any]:
                 if depth == 0:
                     candidate = stripped[start : i + 1]
                     try:
-                        return json.loads(candidate)
+                        return _loads(candidate)
                     except json.JSONDecodeError:
                         break
         start = stripped.find("{", start + 1)

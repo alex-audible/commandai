@@ -115,6 +115,43 @@ def read_shell_context(args: argparse.Namespace, config: Config) -> str | None:
     return parse_shell_context(raw, max_history=config.max_history)
 
 
+_CORRECTION = (
+    "Your previous reply could not be parsed. Reply with ONLY a single JSON "
+    "object in the required format — no prose, no markdown, no code fences, and "
+    "make sure all strings are properly quoted and escaped."
+)
+
+
+def complete_and_parse(client: LLMClient, messages, config: Config):
+    """Call the model and parse its reply, re-asking on unparseable output.
+
+    Local models occasionally emit malformed JSON; rather than fail the whole
+    request, we show the model its mistake and ask again, up to
+    ``config.max_parse_retries`` extra times.
+    """
+    convo = list(messages)
+    last_error: LLMError | None = None
+    last_raw = ""
+    for attempt in range(max(0, config.max_parse_retries) + 1):
+        raw = client.complete(convo)
+        last_raw = raw
+        try:
+            return parse_response(raw)
+        except LLMError as exc:
+            last_error = exc
+            if attempt < max(0, config.max_parse_retries):
+                ui.print_info("Model reply was malformed; asking it to try again…")
+                convo = convo + [
+                    {"role": "assistant", "content": raw[:4000]},
+                    {"role": "user", "content": _CORRECTION},
+                ]
+    snippet = (last_raw or "").strip().replace("\n", " ")[:160]
+    raise LLMError(
+        f"{last_error}"
+        + (f" Model said: {snippet!r}" if snippet else "")
+    )
+
+
 def run_conversation(
     request: str,
     config: Config,
@@ -139,8 +176,7 @@ def run_conversation(
     max_turns = explores_left + searches_left + 1
     for _ in range(max_turns + 1):
         messages = build_messages(request, base_context, research_log, web_enabled=web_enabled)
-        raw = client.complete(messages)
-        result = parse_response(raw)
+        result = complete_and_parse(client, messages, config)
 
         if isinstance(result, AnswerResult):
             return result
@@ -200,6 +236,7 @@ def main(argv: list[str] | None = None) -> int:
             "search_timeout",
             "shell_context",
             "max_history",
+            "max_parse_retries",
         ):
             val = getattr(config, fld)
             if fld == "api_key" and val:

@@ -14,9 +14,10 @@ model    = "gemma-4-26b-a4b"
 api_key  = "lm-studio"        # LM Studio ignores this, but the client needs a value
 
 # --- Generation ---
-temperature = 0.2
-max_tokens  = 1024
-timeout     = 120.0           # seconds
+temperature       = 0.2
+max_tokens        = 1024
+timeout           = 120.0     # seconds
+max_parse_retries = 2         # re-ask the model this many times if it returns invalid JSON
 
 # --- Directory context the model sees ---
 [context]
