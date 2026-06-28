@@ -320,6 +320,80 @@ EXPLORE_JSON = '{"action": "explore", "path": "."}'
 SEARCH_JSON = '{"action": "search", "query": "homebrew formula for foo"}'
 
 
+# ---------------------------------------------------------------------------
+# complete_and_parse (self-correcting retry)
+# ---------------------------------------------------------------------------
+
+class TestCompleteAndParse:
+    def _msgs(self):
+        return [{"role": "user", "content": "x"}]
+
+    def test_valid_first_reply_no_retry(self):
+        client = CapturingLLMClient([ANSWER_JSON])
+        cfg = Config(max_parse_retries=2)
+        result = cli.complete_and_parse(client, self._msgs(), cfg)
+        assert isinstance(result, AnswerResult)
+        assert result.options[0].command == "ls -la"
+        assert len(client.seen) == 1  # called exactly once
+
+    def test_retry_then_success(self):
+        client = CapturingLLMClient(["not json at all", ANSWER_JSON])
+        cfg = Config(max_parse_retries=2)
+        result = cli.complete_and_parse(client, self._msgs(), cfg)
+        assert isinstance(result, AnswerResult)
+        # Called exactly twice: bad reply, then good reply.
+        assert len(client.seen) == 2
+        # The SECOND call's messages must contain the assistant raw + correction.
+        second_msgs = client.seen[1]
+        roles = [m["role"] for m in second_msgs]
+        assert "assistant" in roles
+        # The bad raw is fed back as the assistant message.
+        assistant_contents = [m["content"] for m in second_msgs if m["role"] == "assistant"]
+        assert any("not json at all" in c for c in assistant_contents)
+        # The correction user message is present.
+        user_contents = [m["content"] for m in second_msgs if m["role"] == "user"]
+        joined = "\n".join(user_contents)
+        assert "could not be parsed" in joined or "ONLY a single JSON object" in joined
+
+    def test_zero_retries_raises_after_one_call(self):
+        client = CapturingLLMClient(["garbage"])
+        cfg = Config(max_parse_retries=0)
+        with pytest.raises(LLMError):
+            cli.complete_and_parse(client, self._msgs(), cfg)
+        assert len(client.seen) == 1  # no retry
+
+    def test_persistent_malformed_raises_with_snippet(self):
+        client = CapturingLLMClient(["totally bad reply ###", "still bad %%%"])
+        cfg = Config(max_parse_retries=1)
+        with pytest.raises(LLMError) as exc_info:
+            cli.complete_and_parse(client, self._msgs(), cfg)
+        assert len(client.seen) == 2  # original + 1 retry
+        msg = str(exc_info.value)
+        assert "Model said:" in msg
+        # The snippet of the last raw reply is included.
+        assert "still bad" in msg
+
+    def test_returns_explore_request(self):
+        client = CapturingLLMClient([EXPLORE_JSON])
+        cfg = Config(max_parse_retries=2)
+        result = cli.complete_and_parse(client, self._msgs(), cfg)
+        assert isinstance(result, ExploreRequest)
+
+    def test_returns_search_request(self):
+        client = CapturingLLMClient([SEARCH_JSON])
+        cfg = Config(max_parse_retries=2)
+        result = cli.complete_and_parse(client, self._msgs(), cfg)
+        assert isinstance(result, SearchRequest)
+
+    def test_original_messages_not_mutated(self):
+        client = CapturingLLMClient(["bad", ANSWER_JSON])
+        cfg = Config(max_parse_retries=2)
+        original = self._msgs()
+        cli.complete_and_parse(client, original, cfg)
+        # The caller's list should be unchanged (function copies it).
+        assert original == [{"role": "user", "content": "x"}]
+
+
 class TestRunConversation:
     def test_returns_answer_result(self, tmp_path):
         client = FakeLLMClient([ANSWER_JSON])
@@ -334,6 +408,14 @@ class TestRunConversation:
         cfg = Config()
         result = cli.run_conversation("list files", cfg, client, tmp_path)
         assert isinstance(result, AnswerResult)
+
+    def test_malformed_reply_then_answer_via_retry(self, tmp_path):
+        # run_conversation delegates to complete_and_parse, which retries.
+        client = FakeLLMClient(["garbage not json", ANSWER_JSON])
+        cfg = Config(max_parse_retries=1)
+        result = cli.run_conversation("list files", cfg, client, tmp_path)
+        assert isinstance(result, AnswerResult)
+        assert result.options[0].command == "ls -la"
 
     def test_never_answers_raises_llm_error(self, tmp_path):
         # Always explores — should raise after max_explorations+1
@@ -672,6 +754,7 @@ class TestMain:
         joined = "\n".join(printed)
         assert "shell_context = True" in joined
         assert "max_history = 15" in joined
+        assert "max_parse_retries = 2" in joined
 
     def test_shell_context_passed_to_run_conversation(self, monkeypatch, tmp_path):
         ctx = tmp_path / "ctx"

@@ -120,6 +120,9 @@ Replace `/path/to/commandai` with the absolute path to this repository. The `com
 
 ## Usage
 
+> 📚 See **[EXAMPLES.md](EXAMPLES.md)** for a full gallery of things you can ask `ai`,
+> grouped by task (files, media/ffmpeg, git, Homebrew, system, networking, and more).
+
 ### Basic examples
 
 ```bash
@@ -193,9 +196,10 @@ model    = "gemma-4-26b-a4b"
 api_key  = "lm-studio"   # LM Studio ignores this value; any non-empty string works
 
 # Generation
-temperature = 0.2
-max_tokens  = 1024
-timeout     = 120.0      # seconds to wait for a response
+temperature       = 0.2
+max_tokens        = 1024
+timeout           = 120.0   # seconds to wait for a response
+max_parse_retries = 2       # re-ask the model this many times if it returns invalid JSON
 
 # Directory context sent to the model
 [context]
@@ -232,6 +236,7 @@ Every setting can be overridden by an environment variable without touching the 
 | `AI_TEMPERATURE` | `temperature` | float | `0.2` |
 | `AI_MAX_TOKENS` | `max_tokens` | int | `1024` |
 | `AI_TIMEOUT` | `timeout` | float | `120.0` |
+| `AI_MAX_PARSE_RETRIES` | `max_parse_retries` | int | `2` |
 | `AI_MAX_FILES` | `max_files` | int | `200` |
 | `AI_MAX_DEPTH` | `max_depth` | int | `2` |
 | `AI_INCLUDE_HIDDEN` | `include_hidden` | bool (`1`/`true`/`yes`/`on`) | `false` |
@@ -303,6 +308,10 @@ export AI_API_KEY="$OPENAI_API_KEY"
 **"Could not reach the model" / connection refused**
 
 LM Studio's local server is not running or is on a different port. Open LM Studio, go to the **Developer** tab, and click **Start Server**. The default port is `1234`. If you changed it, set `AI_BASE_URL` or update `base_url` in your config. Also make sure the model is loaded — a started server with no loaded model returns empty responses.
+
+**"Could not parse JSON from the model response" / malformed output**
+
+The model returned something that was not valid JSON. commandai already hardens its parsing (stripping code fences, extracting the first balanced object) and automatically re-asks the model when parsing fails — up to `max_parse_retries` extra times (default 2). The error message also includes a snippet of what the model actually said, which helps diagnose the problem. Small or heavily-quantized local models tend to emit invalid JSON more often; you can make them more reliable by increasing `max_parse_retries` (config or `AI_MAX_PARSE_RETRIES`) and/or lowering `temperature`.
 
 **Commands run in a subprocess; `cd` does not persist**
 

@@ -86,6 +86,10 @@ class TestConfigDefaults:
         cfg = Config()
         assert cfg.max_history == 15
 
+    def test_default_max_parse_retries(self):
+        cfg = Config()
+        assert cfg.max_parse_retries == 2
+
 
 class TestWithOverrides:
     def test_override_single_field(self):
@@ -231,6 +235,12 @@ class TestLoadConfigFile:
         assert cfg.shell_context is False
         assert cfg.max_history == 3
 
+    def test_flat_max_parse_retries_key(self, tmp_path):
+        toml = tmp_path / "config.toml"
+        toml.write_text("max_parse_retries = 4\n", encoding="utf-8")
+        cfg = load_config(config_path=toml)
+        assert cfg.max_parse_retries == 4
+
 
 # ---------------------------------------------------------------------------
 # load_config – env vars
@@ -352,6 +362,16 @@ class TestLoadConfigEnv:
         env = {"AI_MAX_HISTORY": "lots"}
         cfg = load_config(config_path=Path("/nonexistent"), environ=env)
         assert cfg.max_history == Config().max_history
+
+    def test_ai_max_parse_retries_int(self):
+        env = {"AI_MAX_PARSE_RETRIES": "5"}
+        cfg = load_config(config_path=Path("/nonexistent"), environ=env)
+        assert cfg.max_parse_retries == 5
+
+    def test_malformed_max_parse_retries_ignored(self):
+        env = {"AI_MAX_PARSE_RETRIES": "many"}
+        cfg = load_config(config_path=Path("/nonexistent"), environ=env)
+        assert cfg.max_parse_retries == Config().max_parse_retries
 
     def test_malformed_temperature_ignored(self):
         env = {"AI_TEMPERATURE": "not-a-float"}

@@ -17,6 +17,7 @@ from command_ai.llm import (
     SYSTEM_PROMPT,
     SearchRequest,
     WEB_SEARCH_BLOCK,
+    _loads,
     build_messages,
     build_system_prompt,
     extract_json,
@@ -169,6 +170,33 @@ class TestBuildSystemPrompt:
 
 
 # ---------------------------------------------------------------------------
+# _loads (tolerant json.loads)
+# ---------------------------------------------------------------------------
+
+class TestLoads:
+    def test_plain_object(self):
+        assert _loads('{"a": 1}') == {"a": 1}
+
+    def test_literal_tab_inside_string(self):
+        # Real tab character inside a quoted string value (strict=False).
+        result = _loads('{"a":"x\ty"}')
+        assert result == {"a": "x\ty"}
+
+    def test_literal_newline_inside_string(self):
+        result = _loads('{"a":"x\ny"}')
+        assert result == {"a": "x\ny"}
+
+    def test_trailing_comma_object(self):
+        assert _loads('{"a":1,}') == {"a": 1}
+
+    def test_trailing_comma_nested_array(self):
+        assert _loads('{"a":[1,2,],}') == {"a": [1, 2]}
+
+    def test_trailing_comma_with_whitespace(self):
+        assert _loads('{"a": 1 , }') == {"a": 1}
+
+
+# ---------------------------------------------------------------------------
 # extract_json
 # ---------------------------------------------------------------------------
 
@@ -214,6 +242,57 @@ class TestExtractJson:
         text = 'prefix {"key": "first"} suffix {"key": "second"}'
         result = extract_json(text)
         assert result["key"] == "first"
+
+    # --- hardening: <think> stripping ---
+
+    def test_strips_think_block(self):
+        text = '<think>let me reason</think>\n{"command": "ls"}'
+        result = extract_json(text)
+        assert result["command"] == "ls"
+
+    def test_strips_think_block_containing_braces(self):
+        text = '<think>I should use ls {foo}</think>\n{"action":"answer","options":[{"command":"ls"}]}'
+        result = extract_json(text)
+        assert result["options"][0]["command"] == "ls"
+
+    def test_strips_thinking_tag(self):
+        text = '<thinking>hmm {x}</thinking>{"command": "pwd"}'
+        result = extract_json(text)
+        assert result["command"] == "pwd"
+
+    def test_strips_reasoning_tag(self):
+        text = '<reasoning>step {1}</reasoning>{"command": "echo hi"}'
+        result = extract_json(text)
+        assert result["command"] == "echo hi"
+
+    def test_strips_think_tag_case_insensitive(self):
+        text = '<THINK>noise {y}</THINK>{"command": "ls -la"}'
+        result = extract_json(text)
+        assert result["command"] == "ls -la"
+
+    # --- hardening: literal control chars + trailing commas ---
+
+    def test_literal_newline_in_string_value(self):
+        text = '{"command":"a\nb"}'  # real newline
+        result = extract_json(text)
+        assert result["command"] == "a\nb"
+
+    def test_literal_tab_in_string_value(self):
+        text = '{"command":"a\tb"}'  # real tab
+        result = extract_json(text)
+        assert result["command"] == "a\tb"
+
+    def test_trailing_comma_in_array_and_object(self):
+        text = '{"options":[{"command":"ls"},],}'
+        result = extract_json(text)
+        assert result["options"][0]["command"] == "ls"
+
+    # --- still-invalid input that the retry layer (not extract_json) handles ---
+
+    def test_unescaped_inner_quotes_raises(self):
+        # Genuinely invalid JSON: unescaped double-quotes inside a string.
+        with pytest.raises(LLMError):
+            extract_json('{"command":"echo "hi""}')
 
 
 # ---------------------------------------------------------------------------
@@ -286,6 +365,12 @@ class TestParseResponse:
         text = '{"query": "x", "command": "ls"}'
         result = parse_response(text)
         assert isinstance(result, AnswerResult)
+
+    def test_think_block_then_answer(self):
+        text = '<think>I should use ls {foo}</think>\n{"action":"answer","options":[{"command":"ls"}]}'
+        result = parse_response(text)
+        assert isinstance(result, AnswerResult)
+        assert result.options[0].command == "ls"
 
     def test_answer_with_options(self):
         text = '{"action": "answer", "options": [{"command": "ls -la", "summary": "list"}]}'
