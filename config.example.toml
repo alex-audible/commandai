@@ -36,3 +36,11 @@ web_search     = true         # set false to disable web search entirely
 max_searches   = 3            # max web searches per request
 search_results = 5            # results returned per search
 search_timeout = 15.0         # seconds
+
+# --- Shell context ---
+# Lets the model see the previous command's exit status and your recent command
+# history (NOT command output), so you can say  ai fix that  after a failure.
+# Provided by the `ai` shell function. Disable per-run with --no-shell-context.
+[shell]
+shell_context = true          # set false to never send shell history/exit code
+max_history   = 15            # how many recent command lines to include

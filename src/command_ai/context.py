@@ -161,6 +161,50 @@ def extension_summary(root: Path, config: Config) -> str:
     return ", ".join(f"{ext}×{n}" for ext, n in top)
 
 
+def parse_shell_context(raw: str, max_history: int = 15) -> str | None:
+    """Format the shell-context file written by the ``ai`` shell function.
+
+    The file looks like::
+
+        last_exit_status=1
+        recent_history:
+        git status
+        git push
+
+    Returns a labelled block for the prompt, or ``None`` if there is nothing
+    useful to report.
+    """
+    if not raw:
+        return None
+
+    status: str | None = None
+    history: list[str] = []
+    in_history = False
+    for line in raw.splitlines():
+        if not in_history and line.startswith("last_exit_status="):
+            status = line.split("=", 1)[1].strip()
+        elif line.strip() == "recent_history:":
+            in_history = True
+        elif in_history:
+            if line.strip():
+                history.append(line.rstrip())
+
+    if max_history >= 0:
+        history = history[-max_history:] if max_history else []
+
+    if status is None and not history:
+        return None
+
+    lines = ["Recent shell session (use this to fix or follow up on previous commands):"]
+    if status is not None:
+        suffix = " (non-zero means the previous command failed)" if status not in ("", "0") else ""
+        lines.append(f"Previous command exit status: {status}{suffix}")
+    if history:
+        lines.append("Recent commands (oldest first, most recent last):")
+        lines.extend(f"  {cmd}" for cmd in history)
+    return "\n".join(lines)
+
+
 def gather_context(cwd: Path | None = None, config: Config | None = None) -> str:
     """Assemble the full context block injected into the model prompt."""
     cwd = (cwd or Path.cwd()).expanduser()

@@ -31,6 +31,7 @@ $ ai use ffmpeg to convert all the videos in this folder from mov to mp4
 - **Filesystem-aware context** — the model sees a depth-limited directory tree and extension summary for the current folder, so suggestions are grounded in what is actually here.
 - **Explore loop** — for deeper questions the model may peek into subdirectories before answering (capped at `max_explorations` hops).
 - **Optional web search** — when the model needs an external fact it can search the web via DuckDuckGo (no API key required) — for example, finding the right Homebrew formula or cask for a described tool. Ask `ai brew install a tool that flashes bootable images to usb drives` and the model searches the web, finds e.g. balenaEtcher, and suggests `brew install --cask balenaetcher`. It is local-first: a web search only happens when the model decides it needs one, and it can be turned off.
+- **Shell-context aware** — sees the previous command's exit code and your recent command history, so you can ask it to fix or follow up on what just ran — e.g. `ai fix that` after a failed `git push`. It never reads command output, only the command lines plus the exit status, and it can be turned off.
 - **Runs in your current shell** — `cd`, `export`, and other shell-state changes persist, because the chosen command is `eval`'d by the `ai` shell function rather than a child process.
 - **Safety gates** — the command is always shown before execution; destructive patterns (`rm -rf`, `dd`, `mkfs`, `curl | sh`, …) require an extra explicit confirmation.
 - **Local and private** — all inference runs through LM Studio on your machine; nothing leaves your laptop.
@@ -134,6 +135,10 @@ ai create a gzipped tarball of the src folder
 # Let the model search the web for the right Homebrew cask
 ai brew install a tool that flashes bootable images to usb drives
 
+# Follow up on a command that just failed (uses shell context)
+git push                       # ! [rejected] — remote has changes you don't have
+ai fix that                    # suggests: git pull --rebase && git push
+
 # Something ambiguous — yields multiple options
 ai back up the database
 ```
@@ -152,6 +157,7 @@ Destructive commands (those rated `danger: high` by the model, or those matching
 | `-y`, `--yes` | Skip the interactive prompt and run the first option automatically. Also bypasses the danger confirmation, so use carefully. |
 | `--no-context` | Do not send directory context to the model. Useful when the current folder is irrelevant or very large. |
 | `--no-web` | Disable web search for this invocation, even if it is enabled in config. |
+| `--no-shell-context` | Disable shell-context (recent history + previous exit code) for this invocation. |
 | `--print-config` | Print the resolved configuration (endpoint, model, all settings) and exit. Useful for debugging. |
 | `--model MODEL` | Use a different model for this invocation. |
 | `--base-url URL` | Use a different endpoint for this invocation. |
@@ -207,6 +213,11 @@ web_search     = true    # set false to disable web search entirely
 max_searches   = 3       # maximum web searches per request
 search_results = 5       # results returned per search
 search_timeout = 15.0    # seconds
+
+# Shell context (recent history + previous exit code; never command output)
+[shell]
+shell_context = true     # set false to never send shell history/exit code
+max_history   = 15       # how many recent command lines to include
 ```
 
 ### Environment variables
@@ -229,6 +240,8 @@ Every setting can be overridden by an environment variable without touching the 
 | `AI_MAX_SEARCHES` | `max_searches` | int | `3` |
 | `AI_SEARCH_RESULTS` | `search_results` | int | `5` |
 | `AI_SEARCH_TIMEOUT` | `search_timeout` | float | `15.0` |
+| `AI_SHELL_CONTEXT` | `shell_context` | bool (`1`/`true`/`yes`/`on`) | `true` |
+| `AI_MAX_HISTORY` | `max_history` | int | `15` |
 
 ### Precedence
 
@@ -263,13 +276,15 @@ export AI_API_KEY="$OPENAI_API_KEY"
 
 1. **Context gathering.** Before asking the model anything, commandai builds a compact snapshot of the current directory: a depth-limited file tree (controlled by `max_depth` and `max_files`) and a summary of file extensions present. It also records the OS and shell. Only file names and metadata are read — file contents are never sent to the model.
 
-2. **Explore loop.** The model may respond with an explore request (`{"action": "explore", "path": "some/subdir"}`) instead of a final answer. commandai resolves that path, lists it, appends the result to the conversation, and calls the model again. This repeats up to `max_explorations` times, giving the model genuine filesystem navigation without relying on flaky native tool-calling.
+2. **Shell context.** When enabled (the default), the `ai` shell function captures `$?` (the exit status of the command you ran immediately before `ai`, recorded as its very first line so nothing else can reset it) plus your recent command lines via zsh `fc` / bash `history`. These are written to a temp file passed as `--shell-context-file`, and the tool folds up to `max_history` lines of it into the model's prompt — so `ai fix that` knows what just ran and whether it failed. The current `ai ...` invocation is excluded from the captured history. Only the command lines and the exit status are sent, never command output. Disable it with `shell_context = false` in config or `--no-shell-context` on the command line.
 
-3. <a id="web-search"></a>**Web search.** When web search is enabled (the default), the model may instead respond with a search request (`{"action": "search", "query": "..."}`) when it needs current or external information — for example, the exact Homebrew cask name for a described tool. commandai runs a DuckDuckGo text search (via the `ddgs` package, no API key), feeds the rendered results back into the conversation, and calls the model again; the model then produces the final command. This is capped at `max_searches` searches per request. Searches only happen when the model asks for one — the rest of the flow stays local. Disable it with `web_search = false` in config or `--no-web` on the command line.
+3. **Explore loop.** The model may respond with an explore request (`{"action": "explore", "path": "some/subdir"}`) instead of a final answer. commandai resolves that path, lists it, appends the result to the conversation, and calls the model again. This repeats up to `max_explorations` times, giving the model genuine filesystem navigation without relying on flaky native tool-calling.
 
-4. **Answer and selection.** Once the model responds with `{"action": "answer", "options": [...]}`, commandai renders each option with its summary and per-argument breakdown, then presents an interactive selection prompt.
+4. <a id="web-search"></a>**Web search.** When web search is enabled (the default), the model may instead respond with a search request (`{"action": "search", "query": "..."}`) when it needs current or external information — for example, the exact Homebrew cask name for a described tool. commandai runs a DuckDuckGo text search (via the `ddgs` package, no API key), feeds the rendered results back into the conversation, and calls the model again; the model then produces the final command. This is capped at `max_searches` searches per request. Searches only happen when the model asks for one — the rest of the flow stays local. Disable it with `web_search = false` in config or `--no-web` on the command line.
 
-5. **Current-shell execution.** The `ai` shell function (sourced from `shell/ai.sh`) calls `command-ai --output-file <tmpfile>`. The Python tool handles all interaction on **stderr**, leaving stdout clean. If the user confirms a command, it is written to the temp file. The shell function then `eval`s the contents of that file in the **current shell**, so `cd`, `export`, and any other shell-state changes persist. The chosen command is also recorded in shell history (via `print -s` on zsh, `history -s` on bash). If you invoke `command-ai` directly instead of via the `ai` function, the command runs in a subprocess and shell-state changes do not persist.
+5. **Answer and selection.** Once the model responds with `{"action": "answer", "options": [...]}`, commandai renders each option with its summary and per-argument breakdown, then presents an interactive selection prompt.
+
+6. **Current-shell execution.** The `ai` shell function (sourced from `shell/ai.sh`) calls `command-ai --output-file <tmpfile>`. The Python tool handles all interaction on **stderr**, leaving stdout clean. If the user confirms a command, it is written to the temp file. The shell function then `eval`s the contents of that file in the **current shell**, so `cd`, `export`, and any other shell-state changes persist. The chosen command is also recorded in shell history (via `print -s` on zsh, `history -s` on bash). If you invoke `command-ai` directly instead of via the `ai` function, the command runs in a subprocess and shell-state changes do not persist.
 
 ---
 
@@ -279,6 +294,7 @@ export AI_API_KEY="$OPENAI_API_KEY"
 - Each option includes a `danger` field (`low` / `medium` / `high`) set by the model. commandai also applies its own heuristic that flags patterns such as `rm -rf`, `rm -r ...*`, `dd if=`, `mkfs`, `chmod -R 777`, `curl | sh`, fork bombs, and writes to `/dev/disk` or `/dev/sd*`. Either a `high` model rating or a heuristic match triggers an extra confirmation step.
 - Passing `-y`/`--yes` skips the interactive prompt **and** bypasses the extra danger confirmation. Only use it in contexts where you have already inspected the command.
 - **Privacy:** when the model chooses to search, only the search query (not your files or directory listing) is sent to DuckDuckGo. Set `web_search = false` in config or pass `--no-web` for fully offline operation.
+- **Privacy:** shell context includes your recent command lines and the previous command's exit code only — never command output or stderr. Disable it with `--no-shell-context` or `shell_context = false`.
 
 ---
 

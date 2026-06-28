@@ -47,6 +47,10 @@ class Config:
     search_results: int = 5
     search_timeout: float = 15.0
 
+    # Shell context (previous command, its exit code, recent history)
+    shell_context: bool = True
+    max_history: int = 15
+
     def with_overrides(self, **kwargs: Any) -> "Config":
         """Return a copy with the given non-None overrides applied."""
         clean = {k: v for k, v in kwargs.items() if v is not None}
@@ -77,6 +81,8 @@ _FILE_KEYS = {
     "max_searches": "max_searches",
     "search_results": "search_results",
     "search_timeout": "search_timeout",
+    "shell_context": "shell_context",
+    "max_history": "max_history",
 }
 
 _ENV_KEYS = {
@@ -94,6 +100,8 @@ _ENV_KEYS = {
     "AI_MAX_SEARCHES": ("max_searches", int),
     "AI_SEARCH_RESULTS": ("search_results", int),
     "AI_SEARCH_TIMEOUT": ("search_timeout", float),
+    "AI_SHELL_CONTEXT": ("shell_context", lambda v: str(v).lower() in ("1", "true", "yes", "on")),
+    "AI_MAX_HISTORY": ("max_history", int),
 }
 
 

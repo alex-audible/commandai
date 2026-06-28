@@ -8,7 +8,7 @@ from pathlib import Path
 
 from . import __version__
 from .config import Config, default_config_path, load_config
-from .context import gather_context, list_directory
+from .context import gather_context, list_directory, parse_shell_context
 from .executor import (
     looks_dangerous,
     run_in_subprocess,
@@ -63,6 +63,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Disable web search even if enabled in config.",
     )
     parser.add_argument(
+        "--shell-context-file",
+        dest="shell_context_file",
+        help="Path to a file with recent shell context (written by the ai shell function).",
+    )
+    parser.add_argument(
+        "--no-shell-context",
+        action="store_true",
+        help="Ignore recent shell history/exit-code context for this run.",
+    )
+    parser.add_argument(
         "--print-config",
         action="store_true",
         help="Print the resolved configuration and exit.",
@@ -94,6 +104,17 @@ def default_searcher(config: Config):
     return _search
 
 
+def read_shell_context(args: argparse.Namespace, config: Config) -> str | None:
+    """Load and format the shell-context file, honouring config/flag toggles."""
+    if args.no_shell_context or not config.shell_context or not args.shell_context_file:
+        return None
+    try:
+        raw = Path(args.shell_context_file).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    return parse_shell_context(raw, max_history=config.max_history)
+
+
 def run_conversation(
     request: str,
     config: Config,
@@ -102,9 +123,12 @@ def run_conversation(
     no_context: bool = False,
     web_enabled: bool = False,
     searcher=None,
+    shell_context: str | None = None,
 ) -> AnswerResult:
     """Drive the explore/search loop until the model returns a final answer."""
     base_context = "(context disabled)" if no_context else gather_context(cwd, config)
+    if shell_context:
+        base_context = f"{base_context}\n\n{shell_context}"
     research_log: list[str] = []
 
     explores_left = max(0, config.max_explorations)
@@ -174,6 +198,8 @@ def main(argv: list[str] | None = None) -> int:
             "max_searches",
             "search_results",
             "search_timeout",
+            "shell_context",
+            "max_history",
         ):
             val = getattr(config, fld)
             if fld == "api_key" and val:
@@ -189,6 +215,7 @@ def main(argv: list[str] | None = None) -> int:
     cwd = Path.cwd()
     client = LLMClient(config)
     web_enabled = config.web_search and not args.no_web
+    shell_context = read_shell_context(args, config)
 
     try:
         ui.print_info(f"Thinking with {config.model} …")
@@ -199,6 +226,7 @@ def main(argv: list[str] | None = None) -> int:
             cwd,
             no_context=args.no_context,
             web_enabled=web_enabled,
+            shell_context=shell_context,
         )
     except LLMError as exc:
         ui.print_error(str(exc))

@@ -43,6 +43,18 @@ class FakeLLMClientRaises:
         raise LLMError("test error")
 
 
+class CapturingLLMClient:
+    """LLM client that records the messages it was called with."""
+
+    def __init__(self, responses: list[str]):
+        self._responses = iter(responses)
+        self.seen: list[list] = []
+
+    def complete(self, messages) -> str:
+        self.seen.append(messages)
+        return next(self._responses)
+
+
 # ---------------------------------------------------------------------------
 # build_parser
 # ---------------------------------------------------------------------------
@@ -116,6 +128,26 @@ class TestBuildParser:
         parser = cli.build_parser()
         args = parser.parse_args(["do", "x"])
         assert args.no_web is False
+
+    def test_shell_context_file_flag(self):
+        parser = cli.build_parser()
+        args = parser.parse_args(["--shell-context-file", "/tmp/ctx", "do", "x"])
+        assert args.shell_context_file == "/tmp/ctx"
+
+    def test_shell_context_file_default_none(self):
+        parser = cli.build_parser()
+        args = parser.parse_args(["do", "x"])
+        assert args.shell_context_file is None
+
+    def test_no_shell_context_flag(self):
+        parser = cli.build_parser()
+        args = parser.parse_args(["--no-shell-context", "do", "x"])
+        assert args.no_shell_context is True
+
+    def test_no_shell_context_default_false(self):
+        parser = cli.build_parser()
+        args = parser.parse_args(["do", "x"])
+        assert args.no_shell_context is False
 
     def test_print_config_flag(self):
         parser = cli.build_parser()
@@ -210,6 +242,73 @@ class TestDefaultSearcher:
         searcher = cli.default_searcher(Config())
         result = searcher("q")
         assert "no results" in result
+
+
+# ---------------------------------------------------------------------------
+# read_shell_context
+# ---------------------------------------------------------------------------
+
+VALID_SHELL_CTX = (
+    "last_exit_status=1\n"
+    "recent_history:\n"
+    "git status\n"
+    "git push\n"
+)
+
+
+def make_shell_args(no_shell_context=False, shell_context_file=None):
+    return argparse.Namespace(
+        no_shell_context=no_shell_context,
+        shell_context_file=shell_context_file,
+    )
+
+
+class TestReadShellContext:
+    def test_real_file_returns_block(self, tmp_path):
+        ctx = tmp_path / "ctx"
+        ctx.write_text(VALID_SHELL_CTX, encoding="utf-8")
+        args = make_shell_args(shell_context_file=str(ctx))
+        result = cli.read_shell_context(args, Config())
+        assert result is not None
+        assert "exit status" in result
+        assert "git push" in result
+
+    def test_no_shell_context_flag_returns_none(self, tmp_path):
+        ctx = tmp_path / "ctx"
+        ctx.write_text(VALID_SHELL_CTX, encoding="utf-8")
+        args = make_shell_args(no_shell_context=True, shell_context_file=str(ctx))
+        assert cli.read_shell_context(args, Config()) is None
+
+    def test_config_shell_context_disabled_returns_none(self, tmp_path):
+        ctx = tmp_path / "ctx"
+        ctx.write_text(VALID_SHELL_CTX, encoding="utf-8")
+        args = make_shell_args(shell_context_file=str(ctx))
+        cfg = Config(shell_context=False)
+        assert cli.read_shell_context(args, cfg) is None
+
+    def test_no_file_path_returns_none(self):
+        args = make_shell_args(shell_context_file=None)
+        assert cli.read_shell_context(args, Config()) is None
+
+    def test_nonexistent_path_returns_none(self, tmp_path):
+        args = make_shell_args(shell_context_file=str(tmp_path / "does-not-exist"))
+        assert cli.read_shell_context(args, Config()) is None
+
+    def test_respects_config_max_history(self, tmp_path):
+        ctx = tmp_path / "ctx"
+        ctx.write_text(VALID_SHELL_CTX, encoding="utf-8")
+        args = make_shell_args(shell_context_file=str(ctx))
+        cfg = Config(max_history=1)
+        result = cli.read_shell_context(args, cfg)
+        assert result is not None
+        assert "git push" in result
+        assert "git status" not in result
+
+    def test_empty_file_returns_none(self, tmp_path):
+        ctx = tmp_path / "ctx"
+        ctx.write_text("", encoding="utf-8")
+        args = make_shell_args(shell_context_file=str(ctx))
+        assert cli.read_shell_context(args, Config()) is None
 
 
 # ---------------------------------------------------------------------------
@@ -342,6 +441,34 @@ class TestRunConversation:
             web_enabled=True, searcher=fake_searcher,
         )
         assert isinstance(result, AnswerResult)
+
+    # --- shell context injection ---
+
+    def test_shell_context_appears_in_user_message(self, tmp_path):
+        client = CapturingLLMClient([ANSWER_JSON])
+        cfg = Config()
+        result = cli.run_conversation(
+            "fix that", cfg, client, tmp_path,
+            shell_context="SHELLCTX-MARKER",
+        )
+        assert isinstance(result, AnswerResult)
+        user_content = client.seen[0][1]["content"]
+        assert "SHELLCTX-MARKER" in user_content
+
+    def test_no_shell_context_marker_absent(self, tmp_path):
+        client = CapturingLLMClient([ANSWER_JSON])
+        cfg = Config()
+        cli.run_conversation("fix that", cfg, client, tmp_path, shell_context=None)
+        user_content = client.seen[0][1]["content"]
+        assert "SHELLCTX-MARKER" not in user_content
+
+    def test_empty_shell_context_not_appended(self, tmp_path):
+        # An empty string is falsy and should not change the context.
+        client = CapturingLLMClient([ANSWER_JSON])
+        cfg = Config()
+        cli.run_conversation("fix that", cfg, client, tmp_path, shell_context="")
+        user_content = client.seen[0][1]["content"]
+        assert "Recent shell session" not in user_content
 
 
 # ---------------------------------------------------------------------------
@@ -536,3 +663,61 @@ class TestMain:
         joined = "\n".join(printed)
         assert "abc" not in joined
         assert "api_key = set" in joined
+
+    def test_print_config_includes_shell_fields(self, monkeypatch):
+        printed = []
+        monkeypatch.setattr(ui, "print_info", lambda msg: printed.append(msg))
+        rc = cli.main(["--print-config"])
+        assert rc == 0
+        joined = "\n".join(printed)
+        assert "shell_context = True" in joined
+        assert "max_history = 15" in joined
+
+    def test_shell_context_passed_to_run_conversation(self, monkeypatch, tmp_path):
+        ctx = tmp_path / "ctx"
+        ctx.write_text(
+            "last_exit_status=1\nrecent_history:\ngit status\ngit push\n",
+            encoding="utf-8",
+        )
+        captured = {}
+        def fake_run_conversation(request, config, client, cwd, **kwargs):
+            captured.update(kwargs)
+            return AnswerResult(options=[CommandOption(command="ls", danger="low")])
+        self._patch_llm(monkeypatch, [ANSWER_JSON])
+        monkeypatch.setattr(cli, "run_conversation", fake_run_conversation)
+        self._patch_select(monkeypatch, None)
+        cli.main(["--shell-context-file", str(ctx), "fix", "that"])
+        assert isinstance(captured["shell_context"], str)
+        assert "exit status" in captured["shell_context"]
+
+    def test_no_shell_context_passes_none(self, monkeypatch, tmp_path):
+        ctx = tmp_path / "ctx"
+        ctx.write_text(
+            "last_exit_status=1\nrecent_history:\ngit status\n",
+            encoding="utf-8",
+        )
+        captured = {}
+        def fake_run_conversation(request, config, client, cwd, **kwargs):
+            captured.update(kwargs)
+            return AnswerResult(options=[CommandOption(command="ls", danger="low")])
+        self._patch_llm(monkeypatch, [ANSWER_JSON])
+        monkeypatch.setattr(cli, "run_conversation", fake_run_conversation)
+        self._patch_select(monkeypatch, None)
+        cli.main(["--no-shell-context", "--shell-context-file", str(ctx), "fix", "that"])
+        assert captured["shell_context"] is None
+
+    def test_shell_context_happy_path_end_to_end(self, monkeypatch, tmp_path):
+        ctx = tmp_path / "ctx"
+        ctx.write_text(
+            "last_exit_status=2\nrecent_history:\ngit push\n",
+            encoding="utf-8",
+        )
+        self._patch_llm(monkeypatch, [ANSWER_JSON])
+        opt = CommandOption(command="ls -la", summary="list", danger="low")
+        self._patch_select(monkeypatch, opt)
+        out = tmp_path / "cmd.sh"
+        rc = cli.main(
+            ["--shell-context-file", str(ctx), "--output-file", str(out), "fix", "that"]
+        )
+        assert rc == 0
+        assert "ls -la" in out.read_text(encoding="utf-8")

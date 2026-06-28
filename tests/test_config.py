@@ -78,6 +78,14 @@ class TestConfigDefaults:
         cfg = Config()
         assert cfg.search_timeout == 15.0
 
+    def test_default_shell_context(self):
+        cfg = Config()
+        assert cfg.shell_context is True
+
+    def test_default_max_history(self):
+        cfg = Config()
+        assert cfg.max_history == 15
+
 
 class TestWithOverrides:
     def test_override_single_field(self):
@@ -206,6 +214,23 @@ class TestLoadConfigFile:
         assert cfg.search_results == 4
         assert cfg.search_timeout == 11.0
 
+    def test_flat_shell_context_keys(self, tmp_path):
+        toml = tmp_path / "config.toml"
+        toml.write_text("shell_context = false\nmax_history = 7\n", encoding="utf-8")
+        cfg = load_config(config_path=toml)
+        assert cfg.shell_context is False
+        assert cfg.max_history == 7
+
+    def test_nested_shell_table_flattened(self, tmp_path):
+        # Prove the loader flattens a [shell] table.
+        toml = tmp_path / "config.toml"
+        toml.write_text(
+            "[shell]\nshell_context = false\nmax_history = 3\n", encoding="utf-8"
+        )
+        cfg = load_config(config_path=toml)
+        assert cfg.shell_context is False
+        assert cfg.max_history == 3
+
 
 # ---------------------------------------------------------------------------
 # load_config – env vars
@@ -305,6 +330,28 @@ class TestLoadConfigEnv:
         env = {"AI_SEARCH_TIMEOUT": "soon"}
         cfg = load_config(config_path=Path("/nonexistent"), environ=env)
         assert cfg.search_timeout == Config().search_timeout
+
+    def test_ai_shell_context_true_variants(self):
+        for val in ("1", "true", "yes", "on", "TRUE", "On"):
+            env = {"AI_SHELL_CONTEXT": val}
+            cfg = load_config(config_path=Path("/nonexistent"), environ=env)
+            assert cfg.shell_context is True, f"Expected True for {val!r}"
+
+    def test_ai_shell_context_false_variants(self):
+        for val in ("0", "false", "no", "off", "False"):
+            env = {"AI_SHELL_CONTEXT": val}
+            cfg = load_config(config_path=Path("/nonexistent"), environ=env)
+            assert cfg.shell_context is False, f"Expected False for {val!r}"
+
+    def test_ai_max_history_int(self):
+        env = {"AI_MAX_HISTORY": "25"}
+        cfg = load_config(config_path=Path("/nonexistent"), environ=env)
+        assert cfg.max_history == 25
+
+    def test_malformed_max_history_ignored(self):
+        env = {"AI_MAX_HISTORY": "lots"}
+        cfg = load_config(config_path=Path("/nonexistent"), environ=env)
+        assert cfg.max_history == Config().max_history
 
     def test_malformed_temperature_ignored(self):
         env = {"AI_TEMPERATURE": "not-a-float"}

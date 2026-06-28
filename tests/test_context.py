@@ -15,6 +15,7 @@ from command_ai.context import (
     extension_summary,
     gather_context,
     list_directory,
+    parse_shell_context,
 )
 
 
@@ -298,3 +299,109 @@ class TestGatherContext:
         # Should not crash with no config
         result = gather_context(cwd=tmp_path)
         assert isinstance(result, str)
+
+
+# ---------------------------------------------------------------------------
+# parse_shell_context
+# ---------------------------------------------------------------------------
+
+FULL_SHELL_CTX = (
+    "last_exit_status=1\n"
+    "recent_history:\n"
+    "cd ~/proj\n"
+    "git status\n"
+    "git push\n"
+)
+
+
+class TestParseShellContext:
+    def test_returns_labelled_block(self):
+        result = parse_shell_context(FULL_SHELL_CTX)
+        assert result is not None
+        assert result.startswith(
+            "Recent shell session (use this to fix or follow up on previous commands):"
+        )
+
+    def test_includes_exit_status_line(self):
+        result = parse_shell_context(FULL_SHELL_CTX)
+        assert "Previous command exit status: 1" in result
+
+    def test_nonzero_status_has_failed_suffix(self):
+        result = parse_shell_context(FULL_SHELL_CTX)
+        assert "Previous command exit status: 1 (non-zero means the previous command failed)" in result
+
+    def test_zero_status_no_failed_suffix(self):
+        raw = "last_exit_status=0\nrecent_history:\nls\n"
+        result = parse_shell_context(raw)
+        assert "Previous command exit status: 0" in result
+        assert "failed" not in result
+
+    def test_includes_recent_commands_header(self):
+        result = parse_shell_context(FULL_SHELL_CTX)
+        assert "Recent commands (oldest first, most recent last):" in result
+
+    def test_commands_indented(self):
+        result = parse_shell_context(FULL_SHELL_CTX)
+        assert "  cd ~/proj" in result
+        assert "  git status" in result
+        assert "  git push" in result
+
+    def test_commands_order_preserved(self):
+        result = parse_shell_context(FULL_SHELL_CTX)
+        cd_idx = result.index("cd ~/proj")
+        status_idx = result.index("git status")
+        push_idx = result.index("git push")
+        assert cd_idx < status_idx < push_idx
+
+    def test_max_history_keeps_last_n(self):
+        result = parse_shell_context(FULL_SHELL_CTX, max_history=1)
+        assert "git push" in result  # most recent kept
+        assert "cd ~/proj" not in result
+        assert "git status" not in result
+
+    def test_max_history_two(self):
+        result = parse_shell_context(FULL_SHELL_CTX, max_history=2)
+        assert "git status" in result
+        assert "git push" in result
+        assert "cd ~/proj" not in result
+
+    def test_max_history_zero_no_history_lines(self):
+        result = parse_shell_context(FULL_SHELL_CTX, max_history=0)
+        # status is still present, but no command lines and no commands header
+        assert result is not None
+        assert "Previous command exit status: 1" in result
+        assert "Recent commands" not in result
+        assert "git push" not in result
+
+    def test_empty_string_returns_none(self):
+        assert parse_shell_context("") is None
+
+    def test_only_history_header_no_status_no_commands_returns_none(self):
+        assert parse_shell_context("recent_history:\n") is None
+
+    def test_only_status_no_history(self):
+        result = parse_shell_context("last_exit_status=0\n")
+        assert result is not None
+        assert "Previous command exit status: 0" in result
+        assert "Recent commands" not in result
+
+    def test_only_history_no_status(self):
+        raw = "recent_history:\nls -la\npwd\n"
+        result = parse_shell_context(raw)
+        assert result is not None
+        assert "ls -la" in result
+        assert "pwd" in result
+        assert "exit status" not in result
+
+    def test_blank_lines_in_history_skipped(self):
+        raw = "last_exit_status=2\nrecent_history:\nls\n\n\npwd\n"
+        result = parse_shell_context(raw)
+        assert "  ls" in result
+        assert "  pwd" in result
+
+    def test_empty_status_value_no_failed_suffix(self):
+        # status == "" should not get the failed suffix
+        raw = "last_exit_status=\nrecent_history:\nls\n"
+        result = parse_shell_context(raw)
+        assert "Previous command exit status: " in result
+        assert "failed" not in result
