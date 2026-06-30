@@ -52,9 +52,29 @@ def _file_get(provider: str) -> str | None:
         return None
 
 
+def _warn(message: str) -> None:
+    """Surface a permissions warning without ever logging the key value."""
+    try:
+        from . import ui
+
+        ui.print_error(message)
+    except Exception:
+        import sys
+
+        print(f"command-ai: {message}", file=sys.stderr)
+
+
 def _file_set(provider: str, key: str) -> None:
     path = _cred_file()
-    path.parent.mkdir(parents=True, exist_ok=True)
+    parent = path.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    # Restrict the directory too (best-effort; no-op on platforms without POSIX
+    # modes), so the credentials file isn't reachable via a loose parent dir.
+    try:
+        os.chmod(parent, 0o700)
+    except OSError:
+        pass
+
     data: dict = {}
     if path.is_file():
         try:
@@ -62,11 +82,27 @@ def _file_set(provider: str, key: str) -> None:
         except (OSError, ValueError):
             data = {}
     data[provider] = key
-    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+    # Write atomically with restrictive permissions FROM CREATION: open the temp
+    # file with mode 0600 (so there is no world-readable window like write_text +
+    # chmod has), then os.replace() into place. A failure to lock perms is loud,
+    # not swallowed (F-05).
+    tmp = path.with_name(path.name + ".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2)
+        os.replace(tmp, path)
+    finally:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
     try:
         os.chmod(path, 0o600)
     except OSError:
-        pass
+        _warn(f"Could not restrict permissions on {path}; it may be readable by other users.")
 
 
 def get_api_key(provider: str) -> str | None:

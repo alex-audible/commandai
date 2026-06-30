@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# commandai pre-push hook.
+#
+# Runs the test suite before a push completes. The suite includes
+# tests/test_docs.py, which fails if README.md or config.example.toml have
+# drifted from the code (CLI flags, AI_* env vars, Config fields) — so docs
+# can't silently fall out of date.
+#
+# This hook is committed in the repo, but git requires each clone to opt in
+# (a repository cannot enable its own hooks on clone, by design). Activate with:
+#     git config core.hooksPath .githooks
+# install.sh / install.ps1 do this for you. Bypass a single push with:
+#     git push --no-verify
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+if [ -x ".venv/bin/pytest" ]; then
+  PYTEST=".venv/bin/pytest"
+elif command -v pytest >/dev/null 2>&1; then
+  PYTEST="pytest"
+else
+  echo "pre-push: pytest not found; skipping tests (install dev deps to enable)." >&2
+  exit 0
+fi
+
+echo "pre-push: running test suite (docs-sync + everything else)…" >&2
+if ! "$PYTEST" -q; then
+  echo "pre-push: tests failed — push aborted. Override with 'git push --no-verify'." >&2
+  exit 1
+fi

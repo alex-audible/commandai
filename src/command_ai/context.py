@@ -8,11 +8,59 @@ from __future__ import annotations
 
 import os
 import platform
+import re
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
 from .config import Config
+
+# Control characters (incl. newline/CR/tab) and DEL. Filenames and history lines
+# may contain these on POSIX; left raw in the prompt they let attacker-controlled
+# data forge new "lines" and impersonate instructions (prompt injection, F-01).
+_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def safe_name(name: str, limit: int = 128) -> str:
+    """Render a filesystem name safe to embed in the model prompt.
+
+    Filenames are attacker-controllable (a cloned repo, an unpacked archive, a
+    shared folder) and on POSIX may contain newlines, quotes, or arbitrary prose.
+    We treat them as untrusted *data*: replace control characters with U+FFFD so a
+    crafted name cannot fake a new prompt line, and cap the length so one entry
+    cannot dominate the prompt.
+    """
+    cleaned = _CONTROL_RE.sub("�", name)
+    if len(cleaned) > limit:
+        cleaned = cleaned[:limit] + "…"
+    return cleaned
+
+
+# Inline-secret shapes that routinely appear in shell history. We mask the value
+# (keeping the command shape) before history is sent to the model — which, with a
+# hosted provider, means off the machine (F-03).
+_SECRET_SUBS: list[tuple[re.Pattern[str], str]] = [
+    # KEY=VALUE assignments where the key name looks sensitive.
+    (re.compile(r"(?i)\b([A-Z0-9_]*(?:API|SECRET|TOKEN|PASSWORD|PASSWD|ACCESS_?KEY|PRIVATE_?KEY)[A-Z0-9_]*=)\S+"), r"\1***"),
+    # HTTP Authorization headers (curl -H "Authorization: Bearer …").
+    (re.compile(r"(?i)(authorization:\s*(?:bearer|basic)\s+)\S+"), r"\1***"),
+    # mysql/psql inline password (-p<pw>, no space). Require a letter so a numeric
+    # port like `ssh -p2222` is not redacted.
+    (re.compile(r"(\s-p)(?=\S*[A-Za-z])\S{2,}"), r"\1***"),
+    # Well-known token shapes.
+    (re.compile(r"\bsk-or-[A-Za-z0-9_-]{6,}"), "***"),
+    (re.compile(r"\bsk-[A-Za-z0-9_-]{16,}"), "***"),
+    (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "***"),
+    (re.compile(r"\bgh[posru]_[A-Za-z0-9]{20,}\b"), "***"),
+    (re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b"), "***"),
+]
+
+
+def redact_secrets(line: str) -> str:
+    """Best-effort masking of obvious inline secrets in a shell-history line."""
+    for pattern, repl in _SECRET_SUBS:
+        line = pattern.sub(repl, line)
+    return line
 
 
 @dataclass
@@ -27,9 +75,9 @@ class DirListing:
     def render(self) -> str:
         lines = [f"{self.path}:"]
         for d in self.dirs:
-            lines.append(f"  {d}/")
+            lines.append(f"  {safe_name(d)}/")
         for f in self.files:
-            lines.append(f"  {f}")
+            lines.append(f"  {safe_name(f)}")
         if self.truncated:
             lines.append("  … (truncated)")
         if not self.dirs and not self.files:
@@ -164,7 +212,7 @@ def build_tree(root: Path, config: Config) -> tuple[str, int]:
             except OSError:
                 is_dir = False
             marker = "/" if is_dir else ""
-            lines.append(f"{prefix}{entry.name}{marker}")
+            lines.append(f"{prefix}{safe_name(entry.name)}{marker}")
             shown += 1
             if is_dir and depth < config.max_depth:
                 walk(Path(entry.path), depth + 1, prefix + "  ")
@@ -233,7 +281,7 @@ def parse_shell_context(raw: str, max_history: int = 15) -> str | None:
             in_history = True
         elif in_history:
             if line.strip():
-                history.append(line.rstrip())
+                history.append(redact_secrets(line.rstrip()))
 
     if max_history >= 0:
         history = history[-max_history:] if max_history else []

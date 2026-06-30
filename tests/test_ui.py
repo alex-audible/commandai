@@ -32,6 +32,13 @@ def fake_questionary_confirm(answer_value):
     return _confirm
 
 
+def fake_questionary_text(answer_value):
+    """Returns a fake questionary.text function that returns answer_value."""
+    def _text(message, **kwargs):
+        return SimpleNamespace(ask=lambda: answer_value)
+    return _text
+
+
 # ---------------------------------------------------------------------------
 # select_command – assume_yes
 # ---------------------------------------------------------------------------
@@ -140,26 +147,37 @@ class TestConfirmDangerous:
         result = ui.confirm_dangerous(opt)
         assert result is False
 
-    def test_interactive_user_confirms(self, monkeypatch):
+    def test_interactive_typed_yes_confirms(self, monkeypatch):
         monkeypatch.setattr(ui, "_interactive", lambda: True)
-        monkeypatch.setattr("questionary.confirm", fake_questionary_confirm(True))
+        monkeypatch.setattr("questionary.text", fake_questionary_text("yes"))
         opt = make_option(danger="high")
-        result = ui.confirm_dangerous(opt)
-        assert result is True
+        assert ui.confirm_dangerous(opt) is True
 
-    def test_interactive_user_denies(self, monkeypatch):
+    def test_interactive_typed_yes_is_case_and_space_insensitive(self, monkeypatch):
         monkeypatch.setattr(ui, "_interactive", lambda: True)
-        monkeypatch.setattr("questionary.confirm", fake_questionary_confirm(False))
+        monkeypatch.setattr("questionary.text", fake_questionary_text("  YES "))
         opt = make_option(danger="high")
-        result = ui.confirm_dangerous(opt)
-        assert result is False
+        assert ui.confirm_dangerous(opt) is True
+
+    def test_interactive_single_y_does_not_confirm(self, monkeypatch):
+        # The whole point of F-09: a one-keystroke "y" must NOT run it.
+        monkeypatch.setattr(ui, "_interactive", lambda: True)
+        monkeypatch.setattr("questionary.text", fake_questionary_text("y"))
+        opt = make_option(danger="high")
+        assert ui.confirm_dangerous(opt) is False
+
+    def test_interactive_other_text_denies(self, monkeypatch):
+        monkeypatch.setattr(ui, "_interactive", lambda: True)
+        monkeypatch.setattr("questionary.text", fake_questionary_text("no"))
+        opt = make_option(danger="high")
+        assert ui.confirm_dangerous(opt) is False
 
     def test_interactive_none_returns_false(self, monkeypatch):
+        # Ctrl-C / EOF at the prompt → ask() returns None → do not run.
         monkeypatch.setattr(ui, "_interactive", lambda: True)
-        monkeypatch.setattr("questionary.confirm", fake_questionary_confirm(None))
+        monkeypatch.setattr("questionary.text", fake_questionary_text(None))
         opt = make_option(danger="high")
-        result = ui.confirm_dangerous(opt)
-        assert result is False
+        assert ui.confirm_dangerous(opt) is False
 
 
 # ---------------------------------------------------------------------------

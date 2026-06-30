@@ -11,7 +11,18 @@ search can be disabled entirely (config ``web_search = false`` or ``--no-web``).
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
+
+# Web results are attacker-influenceable (a page that ranks for the model's
+# query). Strip control characters so a snippet can't forge prompt structure and
+# cap each field's length so one result can't dominate the prompt (F-01).
+_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _clean(text: str, limit: int) -> str:
+    cleaned = _CONTROL_RE.sub(" ", text)
+    return cleaned[:limit] + ("…" if len(cleaned) > limit else "")
 
 
 class SearchError(RuntimeError):
@@ -72,9 +83,9 @@ def render_results(query: str, hits: list[SearchHit]) -> str:
         return f"Web search for {query!r}: no results."
     lines = [f"Web search results for {query!r}:"]
     for i, hit in enumerate(hits, start=1):
-        lines.append(f"  {i}. {hit.title}")
+        lines.append(f"  {i}. {_clean(hit.title, 200)}")
         if hit.url:
-            lines.append(f"     {hit.url}")
+            lines.append(f"     {_clean(hit.url, 300)}")
         if hit.snippet:
-            lines.append(f"     {hit.snippet}")
+            lines.append(f"     {_clean(hit.snippet, 500)}")
     return "\n".join(lines)
