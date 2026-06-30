@@ -1,11 +1,12 @@
 name: CI
 
-# Runs the full test suite on REAL Linux, macOS, and Windows runners across the
-# supported Python versions. The suite itself mocks platform identity and
-# subprocess execution (see tests/test_executor.py), so before this matrix the
-# only platform the code had ever actually run on was the maintainer's Mac.
-# This workflow exercises real imports, real path/filesystem semantics, real
-# dependency resolution, and real keyring availability on each OS.
+# Runs the full test suite on REAL Linux, macOS, and Windows runners. The suite
+# includes real-execution integration tests (tests/test_integration.py) that
+# spawn the actual shell on each OS, so this is genuine cross-platform coverage,
+# not just the maintainer's Mac with mocked platform identity.
+#
+# We pin a single Python version rather than testing a version matrix: the goal
+# here is cross-OS / real-shell confidence, not Python-version compatibility.
 
 on:
   push:
@@ -22,26 +23,29 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Single pinned Python version for every job (bump here when desired).
+env:
+  PYTHON_VERSION: "3.12"
+
 jobs:
   test:
-    name: test (${{ matrix.os }} · py${{ matrix.python-version }})
+    name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
-      # Don't cancel the whole matrix when one cell fails — a Windows-only or
-      # 3.11-only failure is exactly what we want to see in isolation.
+      # Don't cancel the whole matrix when one cell fails — a Windows-only
+      # failure is exactly what we want to see in isolation.
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        python-version: ["3.11", "3.12", "3.13"]
 
     steps:
       - name: Check out
         uses: actions/checkout@v4
 
-      - name: Set up Python ${{ matrix.python-version }}
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
           cache-dependency-path: pyproject.toml
 
