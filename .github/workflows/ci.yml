@@ -1,0 +1,59 @@
+name: CI
+
+# Runs the full test suite on REAL Linux, macOS, and Windows runners across the
+# supported Python versions. The suite itself mocks platform identity and
+# subprocess execution (see tests/test_executor.py), so before this matrix the
+# only platform the code had ever actually run on was the maintainer's Mac.
+# This workflow exercises real imports, real path/filesystem semantics, real
+# dependency resolution, and real keyring availability on each OS.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Only need to read the repo to test it.
+permissions:
+  contents: read
+
+# A newer push to the same ref cancels the in-flight run.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (${{ matrix.os }} · py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # Don't cancel the whole matrix when one cell fails — a Windows-only or
+      # 3.11-only failure is exactly what we want to see in isolation.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install package + dev dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Show environment
+        run: |
+          python --version
+          python -c "import platform, sys; print('platform:', platform.platform()); print('executable:', sys.executable)"
+
+      - name: Run tests
+        run: python -m pytest --cov=command_ai --cov-report=term-missing
