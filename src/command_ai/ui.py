@@ -165,13 +165,18 @@ def confirm_store_key(location: str) -> bool:
 
 
 def confirm_dangerous(option: CommandOption) -> bool:
-    """Extra confirmation for high-danger commands. Returns True to proceed."""
+    """Extra confirmation for high-danger commands. Returns True to proceed.
+
+    Requires the user to TYPE ``yes`` in full (not a single keystroke), so the
+    confirmation is a deliberate act and matches the wording. Fails closed when
+    non-interactive.
+    """
     console.print(
         Panel(
-            Text(
-                "This command is flagged as HIGH danger (destructive or "
-                "irreversible). Review it carefully.",
-                style="bold red",
+            Text.assemble(
+                ("This command is flagged as HIGH danger (destructive or "
+                 "irreversible). Review it carefully:\n\n", "bold red"),
+                (option.command, "bold white"),
             ),
             border_style="red",
         )
@@ -180,9 +185,7 @@ def confirm_dangerous(option: CommandOption) -> bool:
         return False
     import questionary
 
-    return bool(
-        questionary.confirm(
-            "Type to confirm you really want to run it",
-            default=False,
-        ).ask()
-    )
+    answer = questionary.text(
+        "Type 'yes' (in full) to run this HIGH-danger command; anything else cancels:",
+    ).ask()
+    return (answer or "").strip().lower() == "yes"

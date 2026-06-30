@@ -33,8 +33,8 @@ $ ai use ffmpeg to convert all the videos in this folder from mov to mp4
 - **Optional web search** — when the model needs an external fact it can search the web via DuckDuckGo (no API key required) — for example, finding the right Homebrew formula or cask for a described tool. Ask `ai brew install a tool that flashes bootable images to usb drives` and the model searches the web, finds e.g. balenaEtcher, and suggests `brew install --cask balenaetcher`. It is local-first: a web search only happens when the model decides it needs one, and it can be turned off.
 - **Shell-context aware** — sees the previous command's exit code and your recent command history, so you can ask it to fix or follow up on what just ran — e.g. `ai fix that` after a failed `git push`. It never reads command output, only the command lines plus the exit status, and it can be turned off.
 - **Runs in your current shell** — `cd`, `export`, and other shell-state changes persist, because the chosen command is `eval`'d by the `ai` shell function rather than a child process.
-- **Safety gates** — the command is always shown before execution; destructive patterns (`rm -rf`, `dd`, `mkfs`, `curl | sh`, …) require an extra explicit confirmation.
-- **Local and private** — by default all inference runs through LM Studio on your machine; nothing leaves your laptop.
+- **Safety gates** — the command is always shown before execution, and destructive patterns (`rm -rf`, `dd`, `mkfs`, `curl | sh`, `find … -exec rm`, anything piped into a shell, …) require typing `yes` to confirm. This is best-effort assistance, **not** a security boundary: the heuristic is a denylist and the model's own `danger` rating can be wrong — *you* reading the command is the real safeguard.
+- **Local-first** — with the default local provider, inference runs through LM Studio on your machine and nothing leaves your laptop. With a **hosted** provider (e.g. OpenRouter) the prompt — including the directory listing, file names, and your recent shell history — is sent to that provider; see [Safety](#safety).
 - **Multiple providers** — works with a local OpenAI-compatible server (LM Studio or Ollama, the default) or hosted [OpenRouter](https://openrouter.ai). Pick your provider once in settings, then just run `ai ...` with no flags. API keys are stored securely in your OS keychain.
 - **Fully configurable** — endpoint, model, temperature, context depth, and more are all adjustable via config file, environment variable, or CLI flag.
 
@@ -170,7 +170,7 @@ ai back up the database
 
 When the model returns its suggestion(s), you navigate with the arrow keys and press **Enter** to run the highlighted option. If there is only one option, pressing Enter immediately confirms it. Press **Ctrl-C** or select **Cancel** to quit without running anything.
 
-Destructive commands (those rated `danger: high` by the model, or those matching known-dangerous patterns like `rm -rf`) show an additional prompt that requires you to type a confirmation before anything runs.
+Destructive commands (those matching known-dangerous patterns like `rm -rf`, or rated `danger: high` by the model) show an additional prompt that requires you to type `yes` in full before anything runs — a single keystroke will not confirm them.
 
 ### Useful flags
 
@@ -186,7 +186,8 @@ Destructive commands (those rated `danger: high` by the model, or those matching
 | `--set-api-key` | Prompt for and securely store the API key for the chosen provider, then exit. |
 | `--model MODEL` | Use a different model for this invocation. |
 | `--base-url URL` | Use a different endpoint for this invocation. |
-| `--api-key KEY` | Use a specific API key for this invocation (overrides stored/config keys). |
+| `--api-key KEY` | Use a specific API key for this invocation (overrides stored/config keys). **Visible in the process list (`ps`) while running** — prefer `AI_API_KEY` or `--set-api-key`. |
+| `--insecure` | Permit sending the API key/prompt to a **non-loopback `http://`** endpoint in cleartext. Off by default (loopback `http://` and any `https://` are always allowed). |
 | `--config PATH` | Load config from a specific TOML file instead of the default location. |
 | `--version` | Print the version and exit. |
 
@@ -234,6 +235,9 @@ temperature       = 0.2
 max_tokens        = 1024
 timeout           = 120.0   # seconds to wait for a response
 max_parse_retries = 2       # re-ask the model this many times if it returns invalid JSON
+
+# Security
+allow_insecure_http = false # allow a non-loopback http:// endpoint (cleartext key); prefer https://
 
 # Directory context sent to the model
 [context]
@@ -315,6 +319,7 @@ Every setting can be overridden by an environment variable without touching the 
 | `AI_TEMPERATURE` | `temperature` | float | `0.2` |
 | `AI_MAX_TOKENS` | `max_tokens` | int | `1024` |
 | `AI_TIMEOUT` | `timeout` | float | `120.0` |
+| `AI_ALLOW_INSECURE_HTTP` | `allow_insecure_http` | bool (`1`/`true`/`yes`/`on`) | `false` |
 | `AI_MAX_PARSE_RETRIES` | `max_parse_retries` | int | `2` |
 | `AI_MAX_FILES` | `max_files` | int | `200` |
 | `AI_MAX_DEPTH` | `max_depth` | int | `2` |
@@ -372,13 +377,22 @@ export AI_API_KEY="$OPENAI_API_KEY"
 
 ---
 
-## Safety
+> **The real safety boundary is you reading the command before you run it.** The
+> checks below are best-effort assistance, not guarantees. Because the tool asks
+> a model to produce a shell command and then runs it, treat every suggestion as
+> untrusted until you've read it.
 
 - The command is **always shown and confirmed** before anything runs. There is no auto-execution unless you pass `-y`/`--yes` explicitly.
-- Each option includes a `danger` field (`low` / `medium` / `high`) set by the model. commandai also applies its own heuristic that flags patterns such as `rm -rf`, `rm -r ...*`, `dd if=`, `mkfs`, `chmod -R 777`, `curl | sh`, fork bombs, and writes to `/dev/disk` or `/dev/sd*`. Either a `high` model rating or a heuristic match triggers an extra confirmation step.
-- Passing `-y`/`--yes` skips the interactive prompt **and** bypasses the extra danger confirmation. Only use it in contexts where you have already inspected the command.
-- **Privacy:** when the model chooses to search, only the search query (not your files or directory listing) is sent to DuckDuckGo. Set `web_search = false` in config or pass `--no-web` for fully offline operation.
-- **Privacy:** shell context includes your recent command lines and the previous command's exit code only — never command output or stderr. Disable it with `--no-shell-context` or `shell_context = false`.
+- **Destructive-command heuristic.** commandai applies its own denylist independently of the model's self-reported `danger` rating (so a mis-rated command is still caught), flagging patterns such as `rm -rf`, `rm -r …*`, `dd if=`, `mkfs`, `chmod -R 777`, `curl | sh`, `find … -exec rm`, anything piped into a shell, destructive `python -c`, disk/partition tools, and writes to block devices. A match (or a `high` model rating) triggers an extra confirmation where you must **type `yes` in full** — a single keystroke won't do it. This is a denylist and can be evaded; it is not a sandbox.
+- Passing `-y`/`--yes` skips the interactive prompt **and** the danger confirmation. Only use it when you have already inspected the command.
+- **Exploration is confined to the working directory.** The model may ask to look inside subdirectories before answering, but requests for paths outside the current directory (e.g. `~/.ssh`, `~/.aws`, `/etc`) are refused, so a misbehaving or prompt-injected model can't enumerate sensitive directories and leak the listing to the provider.
+- **Cleartext-endpoint protection.** commandai refuses to send your API key and prompt to a non-loopback `http://` endpoint (which would transmit them unencrypted). Use `https://`, or override with `--insecure` / `allow_insecure_http = true`. Loopback `http://` (the default local server) is always allowed.
+- **Untrusted context.** File names, directory contents, and web-search snippets are treated as data, not instructions: control characters are stripped and the model is told never to follow instructions embedded in them (a defense against prompt injection via a crafted filename or poisoned web result).
+- **Key handling.** Keys live in the OS keychain (preferred) or a `0600` `credentials.json` fallback, are masked in `--print-config`, and are never logged. `--api-key` is visible in the process list (`ps`) while the command runs — prefer `AI_API_KEY` or `--set-api-key`.
+- **Privacy — web search:** when the model chooses to search, only the search query (not your files or directory listing) is sent to DuckDuckGo. Set `web_search = false` or pass `--no-web` for fully offline operation.
+- **Privacy — shell context:** recent command *lines* and the previous exit code are sent (never command output). With a **hosted** provider these leave your machine, so commandai best-effort **redacts** obvious inline secrets (API keys, `Authorization:` headers, `KEY=…` assignments, `mysql -p…`) before sending. Redaction is heuristic — disable shell context entirely with `--no-shell-context` or `shell_context = false` if in doubt. The current directory path and file names are also part of the prompt sent to a hosted provider.
+
+For the full security review and the rationale behind these controls, see [SECURITY_AUDIT.md](SECURITY_AUDIT.md).
 
 ---
 
@@ -428,7 +442,8 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
-Run the test suite (227 tests; network and UI are fully mocked):
+Run the test suite (network and UI are fully mocked; the cross-platform shell
+tests in `tests/test_integration.py` spawn the real shell where present):
 
 ```bash
 pytest
@@ -445,6 +460,29 @@ To see coverage:
 ```bash
 pytest --cov=command_ai --cov-report=term-missing
 ```
+
+### Keeping docs in sync
+
+Before pushing, make sure the README and `config.example.toml` reflect any
+changes to CLI flags, environment variables, or config keys. This is enforced
+two ways so it can't silently drift:
+
+- **`tests/test_docs.py`** fails the build if a CLI flag, `AI_*` env var, or
+  `Config` field isn't documented. It runs in the test suite (and therefore in
+  [CI](.github/workflows/ci.yml)) on every push.
+- **A committed pre-push hook** (`.githooks/pre-push`) runs the suite locally
+  before a push completes. Activate it once per clone with:
+
+  ```bash
+  git config core.hooksPath .githooks
+  ```
+
+  `install.sh` / `install.ps1` set this for you automatically. (Git requires the
+  pointer to be set per clone — a repository cannot enable its own hooks on
+  clone, by design.)
+
+When you change behavior, update the relevant prose/examples too — the test
+checks that names are *documented*, not that the description is *correct*.
 
 ---
 

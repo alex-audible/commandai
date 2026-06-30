@@ -185,6 +185,31 @@ class TestLoadConfigFile:
         cfg = load_config(config_path=toml)
         assert cfg.max_explorations == 10
 
+    def test_allow_insecure_http_defaults_false(self, tmp_path):
+        cfg = load_config(config_path=tmp_path / "missing.toml", environ={})
+        assert cfg.allow_insecure_http is False
+
+    def test_allow_insecure_http_from_file(self, tmp_path):
+        toml = tmp_path / "config.toml"
+        toml.write_text("allow_insecure_http = true\n", encoding="utf-8")
+        cfg = load_config(config_path=toml, environ={})
+        assert cfg.allow_insecure_http is True
+
+    def test_allow_insecure_http_from_env(self, tmp_path):
+        cfg = load_config(
+            config_path=tmp_path / "missing.toml",
+            environ={"AI_ALLOW_INSECURE_HTTP": "1"},
+        )
+        assert cfg.allow_insecure_http is True
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission check not applicable on Windows")
+    def test_plaintext_api_key_config_is_chmod_0600(self, tmp_path):
+        toml = tmp_path / "config.toml"
+        toml.write_text('api_key = "sk-or-v1-plaintext"\n', encoding="utf-8")
+        os.chmod(toml, 0o644)  # simulate a loosely-created config
+        load_config(config_path=toml, environ={})
+        assert (toml.stat().st_mode & 0o777) == 0o600
+
     def test_mixed_flat_and_nested(self, tmp_path):
         toml = tmp_path / "config.toml"
         toml.write_text(

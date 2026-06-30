@@ -5,8 +5,8 @@
 #
 # Precedence (low → high): defaults < this file < env vars < command-line flags.
 # Env var names: AI_BASE_URL, AI_MODEL, AI_API_KEY, AI_TEMPERATURE,
-# AI_MAX_TOKENS, AI_TIMEOUT, AI_MAX_FILES, AI_MAX_DEPTH, AI_INCLUDE_HIDDEN,
-# AI_MAX_EXPLORATIONS.
+# AI_MAX_TOKENS, AI_TIMEOUT, AI_ALLOW_INSECURE_HTTP, AI_MAX_FILES, AI_MAX_DEPTH,
+# AI_INCLUDE_HIDDEN, AI_MAX_EXPLORATIONS.
 
 # --- Provider preset ---
 # "local"      = an OpenAI-compatible server on your machine (LM Studio, Ollama…)
@@ -41,6 +41,12 @@ temperature       = 0.2
 max_tokens        = 1024
 timeout           = 120.0     # seconds
 max_parse_retries = 2         # re-ask the model this many times if it returns invalid JSON
+
+# --- Security ---
+# Allow sending your API key + prompt to a non-loopback http:// endpoint in
+# cleartext. Off by default; a remote http:// endpoint leaks the key on the wire.
+# Loopback (localhost/127.0.0.1) over http is always allowed. Prefer https://.
+allow_insecure_http = false
 
 # --- Directory context the model sees ---
 [context]

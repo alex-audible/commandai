@@ -40,6 +40,28 @@ No memory-unsafe constructs, no `pickle`/`yaml.load`/`eval` of config, and no di
 
 ---
 
+## Remediation status
+
+Fixes were applied on the `security/hardening` branch (after the report above).
+Each is covered by tests in `tests/test_security.py` (plus `test_ui.py`,
+`test_config.py`, `test_credentials.py`).
+
+| ID | Status | What changed |
+|----|--------|--------------|
+| F-01 | **Fixed** | Filenames and web snippets are sanitized (control chars stripped, length-capped) in `context.safe_name` / `search._clean`; the system prompt now declares the directory listing, file names, history, and web results as UNTRUSTED DATA that must never be obeyed as instructions. |
+| F-02 | **Mitigated** | Denylist expanded (`find … -exec rm`, anything piped into a shell, destructive `python -c`, `shred`/`wipefs`, partition editors, block-device writes) and runs **independently of the model's `danger` rating**. Still a best-effort denylist by nature — the README no longer presents it as a security boundary. `-y` continues to bypass by explicit user opt-in (documented). |
+| F-03 | **Mitigated** | Inline secrets in shell history are redacted (`context.redact_secrets`) before the prompt is built; README documents that a hosted provider receives history/cwd/file names. |
+| F-04 | **Fixed** | Model-driven `explore` is confined to the working-directory subtree; absolute / `..`-escaping / symlink-escaping paths are refused (`cli.run_conversation`). |
+| F-05 | **Fixed** | `credentials.json` is written atomically with `0600` from creation (temp-file + `os.replace`, no world-readable window), the parent dir is set `0700`, and a chmod failure now warns instead of being swallowed. |
+| F-06 | **Fixed** | Installers create the config dir `0700` / file `0600`; a config file containing a plaintext `api_key` is best-effort `chmod 0600` at load. |
+| F-07 | **Fixed** | `LLMClient` refuses to send the key/prompt to a non-loopback `http://` endpoint unless `--insecure` / `allow_insecure_http` is set; loopback and `https://` are always allowed. |
+| F-08 | **Documented** | `--api-key` help text and README warn that the value is visible in `ps`; `AI_API_KEY` / `--set-api-key` are recommended. |
+| F-09 | **Fixed** | The high-danger gate now requires typing `yes` in full (real friction), shows the command, and still fails closed when non-interactive. |
+| F-10 | **Acknowledged** | Dependency bounds/lockfile unchanged in this pass; tracked as future supply-chain hardening. |
+| F-11 | **Fixed** | `extract_json` truncates to `MAX_SCAN` **before** the `<think>` regex, so the backreference pattern never runs on an unbounded string. |
+
+---
+
 ## Detailed findings
 
 ### F-01 — Prompt injection via attacker-controlled context → malicious command suggestion  *(High)*

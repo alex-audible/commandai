@@ -40,6 +40,12 @@ _DANGEROUS_PATTERNS = [
     r"\bchflags\b[^|]*-R",                                # recursive chflags
     r"\bcrontab\s+-r\b",                                  # wipe crontab
     r"\brsync\b.*--delete",                               # mirror-delete
+    r"\bfind\b[^|]*-exec\s+rm\b",                         # find … -exec rm
+    r"\|\s*(sudo\s+)?(bash|sh|zsh|fish)\b",              # anything piped into a shell
+    r"\bpython[0-9.]*\s+-c\b.*(shutil\.rmtree|rmtree|os\.remove|os\.unlink|\.unlink\()",  # destructive python -c
+    r">\s*/dev/(nvme|mmcblk|vd|hd)",                      # writing to a block device
+    r"\b(shred|wipefs|wipe)\b",                           # secure-wipe tools
+    r"\b(fdisk|parted|sgdisk|gdisk|gparted)\b",          # partition editors
     # --- Windows / PowerShell ---
     r"\bdel\b[^|]*\/[a-z]*[sqf]",                         # del /s /q /f
     r"\b(rd|rmdir)\b[^|]*\/s",                            # rd /s, rmdir /s

@@ -34,6 +34,10 @@ class Config:
     max_tokens: int = 1024
     timeout: float = 120.0
 
+    # Security: allow sending the key/prompt to a non-loopback http:// endpoint.
+    # Off by default — a remote plain-HTTP endpoint leaks the API key in cleartext.
+    allow_insecure_http: bool = False
+
     # Context gathering
     max_files: int = 200
     max_depth: int = 2
@@ -78,6 +82,7 @@ _FILE_KEYS = {
     "temperature": "temperature",
     "max_tokens": "max_tokens",
     "timeout": "timeout",
+    "allow_insecure_http": "allow_insecure_http",
     "max_files": "max_files",
     "max_depth": "max_depth",
     "include_hidden": "include_hidden",
@@ -99,6 +104,7 @@ _ENV_KEYS = {
     "AI_TEMPERATURE": ("temperature", float),
     "AI_MAX_TOKENS": ("max_tokens", int),
     "AI_TIMEOUT": ("timeout", float),
+    "AI_ALLOW_INSECURE_HTTP": ("allow_insecure_http", lambda v: str(v).lower() in ("1", "true", "yes", "on")),
     "AI_MAX_FILES": ("max_files", int),
     "AI_MAX_DEPTH": ("max_depth", int),
     "AI_INCLUDE_HIDDEN": ("include_hidden", lambda v: str(v).lower() in ("1", "true", "yes", "on")),
@@ -134,6 +140,14 @@ def _from_file(path: Path) -> dict[str, Any]:
     for file_key, field_name in _FILE_KEYS.items():
         if file_key in flat:
             out[field_name] = flat[file_key]
+    # If the config holds a plaintext API key, best-effort lock it down so it is
+    # not left group/world-readable (F-06). The keychain remains the recommended
+    # store; this only mitigates the documented plaintext fallback.
+    if out.get("api_key"):
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
     return out
 
 

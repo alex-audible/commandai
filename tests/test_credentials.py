@@ -86,6 +86,21 @@ class TestFileFallback:
         mode = cred_file.stat().st_mode & 0o777
         assert mode == 0o600
 
+    def test_parent_dir_mode_0700(self, monkeypatch, tmp_path):
+        if os.name == "nt":
+            pytest.skip("POSIX permission check not applicable on Windows")
+        monkeypatch.setattr(credentials, "_keyring", lambda: None)
+        cred_file = _redirect_cred_file(monkeypatch, tmp_path)
+        credentials.set_api_key("openrouter", "sk-x")
+        mode = cred_file.parent.stat().st_mode & 0o777
+        assert mode == 0o700
+
+    def test_no_temp_file_left_behind(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(credentials, "_keyring", lambda: None)
+        cred_file = _redirect_cred_file(monkeypatch, tmp_path)
+        credentials.set_api_key("openrouter", "sk-x")
+        assert not (cred_file.parent / (cred_file.name + ".tmp")).exists()
+
     def test_second_provider_does_not_clobber_first(self, monkeypatch, tmp_path):
         monkeypatch.setattr(credentials, "_keyring", lambda: None)
         _redirect_cred_file(monkeypatch, tmp_path)

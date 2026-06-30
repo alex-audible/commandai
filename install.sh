@@ -53,7 +53,9 @@ fi
 # 2. Seed a config file if missing.
 if [ ! -f "$CONFIG_FILE" ]; then
   mkdir -p "$CONFIG_DIR"
+  chmod 700 "$CONFIG_DIR" 2>/dev/null || true   # may hold a plaintext API key
   cp "$REPO_DIR/config.example.toml" "$CONFIG_FILE"
+  chmod 600 "$CONFIG_FILE" 2>/dev/null || true
   ok "Wrote default config to $CONFIG_FILE"
 else
   info "Config already exists at $CONFIG_FILE (left untouched)."
@@ -69,6 +71,12 @@ else
     echo "$SHELL_SNIPPET"
   } >> "$RC_FILE"
   ok "Added the ai() function to $RC_FILE"
+fi
+
+# 4. Enable the committed git hooks (pre-push runs the test suite + docs-sync).
+if git -C "$REPO_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+  git -C "$REPO_DIR" config core.hooksPath .githooks
+  ok "Enabled git pre-push hook (core.hooksPath=.githooks)."
 fi
 
 echo ""

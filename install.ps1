@@ -33,6 +33,12 @@ $ConfigFile = Join-Path $ConfigDir "config.toml"
 if (-not (Test-Path $ConfigFile)) {
     New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null
     Copy-Item (Join-Path $RepoDir "config.example.toml") $ConfigFile
+    # Best-effort: the config may later hold a plaintext API key, so restrict it
+    # to the current user (disable inheritance, grant only this account).
+    try {
+        icacls $ConfigFile /inheritance:r /grant:r "$($env:USERNAME):(R,W)" | Out-Null
+        icacls $ConfigDir  /inheritance:r /grant:r "$($env:USERNAME):(OI)(CI)(F)" | Out-Null
+    } catch { Warn "Could not tighten permissions on $ConfigFile (continuing)." }
     Ok "Wrote default config to $ConfigFile"
 } else {
     Info "Config already exists at $ConfigFile (left untouched)."
@@ -49,6 +55,15 @@ if (Select-String -Path $PROFILE -SimpleMatch $line -Quiet -ErrorAction Silently
     Add-Content -Path $PROFILE -Value "`n# commandai: ai() function`n$line"
     Ok "Added the ai() function to $PROFILE"
 }
+
+# 4. Enable the committed git hooks (pre-push runs the test suite + docs-sync).
+try {
+    git -C $RepoDir rev-parse --git-dir *> $null
+    if ($LASTEXITCODE -eq 0) {
+        git -C $RepoDir config core.hooksPath .githooks
+        Ok "Enabled git pre-push hook (core.hooksPath=.githooks)."
+    }
+} catch { }
 
 Write-Host ""
 Ok "Done. Restart PowerShell (or run: . `$PROFILE), then try:"

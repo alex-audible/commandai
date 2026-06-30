@@ -42,7 +42,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--model", help="Override the model name.")
     parser.add_argument("--base-url", dest="base_url", help="Override the endpoint base URL.")
-    parser.add_argument("--api-key", dest="api_key", help="Override the API key.")
+    parser.add_argument(
+        "--api-key",
+        dest="api_key",
+        help="Override the API key. NOTE: visible in the process list (ps) while running; "
+        "prefer AI_API_KEY or --set-api-key.",
+    )
+    parser.add_argument(
+        "--insecure",
+        action="store_true",
+        help="Allow sending the API key/prompt to a non-loopback http:// endpoint in "
+        "cleartext. Not recommended.",
+    )
     parser.add_argument(
         "--set-api-key",
         action="store_true",
@@ -98,6 +109,7 @@ def resolve_config(args: argparse.Namespace) -> Config:
         "model": args.model,
         "base_url": args.base_url,
         "api_key": args.api_key,
+        "allow_insecure_http": True if getattr(args, "insecure", False) else None,
     }
     config_path = Path(args.config) if args.config else None
     config = load_config(config_path=config_path, overrides=overrides)
@@ -256,9 +268,20 @@ def run_conversation(
             research_log.append("(exploration limit reached — answer now)")
             continue
         explores_left -= 1
-        target = Path(result.path)
-        if not target.is_absolute():
-            target = (cwd / target).resolve()
+        # Resolve the requested path against cwd (joining an absolute path or a
+        # leading '~' is discarded/ignored here — `.resolve()` does not expand
+        # '~'), then confine exploration to the working-directory subtree. A
+        # model — possibly steered by prompt injection — must not enumerate
+        # ~/.ssh, ~/.aws, /etc, … and leak those listings to the provider (F-04).
+        target = (cwd / result.path).resolve()
+        cwd_resolved = cwd.resolve()
+        if target != cwd_resolved and cwd_resolved not in target.parents:
+            ui.print_info(f"… refused to explore outside the working directory: {result.path}")
+            research_log.append(
+                f"(refused: {result.path!r} is outside the working directory; "
+                "only the current directory and its subdirectories may be explored)"
+            )
+            continue
         ui.print_info(f"… exploring {target}")
         listing = list_directory(target, config)
         research_log.append(listing.render())
@@ -305,6 +328,7 @@ def main(argv: list[str] | None = None) -> int:
             "temperature",
             "max_tokens",
             "timeout",
+            "allow_insecure_http",
             "max_files",
             "max_depth",
             "include_hidden",
